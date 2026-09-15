@@ -1,0 +1,7 @@
+{
+  "name": "camara-empresa-01",
+  "host": "192.168.1.51",
+  "port": 554,
+  "path": "/ch0_0.h264",
+  "transport": "tcp"
+}
