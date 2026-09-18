@@ -3,6 +3,56 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
+
+
+ENTRY_ALERT = "Se ha identificado a alguien en la entrada"
+
+
+def welcome_alert(name: str) -> str:
+    identity = name.strip()
+    if not identity:
+        raise ValueError("la identidad no puede estar vacía")
+    return f"Bienvenido {identity}"
+
+
+@dataclass(frozen=True)
+class PersonAnnouncement:
+    kind: str
+    text: str
+    identity: str | None = None
+
+
+class PersonAlertSequence:
+    """Genera un aviso de entrada y luego una bienvenida por identidad."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._active = False
+        self._entry_scheduled = False
+        self._welcomes_scheduled: set[str] = set()
+
+    def arm(self) -> None:
+        self.reset()
+        self._active = True
+
+    def announcements(
+        self, names: list[str] | tuple[str, ...]
+    ) -> tuple[PersonAnnouncement, ...]:
+        if not self._active:
+            return ()
+        pending: list[PersonAnnouncement] = []
+        if not self._entry_scheduled:
+            pending.append(PersonAnnouncement("entry", ENTRY_ALERT))
+            self._entry_scheduled = True
+        unique = sorted({name.strip() for name in names if name.strip()})
+        for name in unique:
+            if name not in self._welcomes_scheduled:
+                pending.append(PersonAnnouncement("welcome", welcome_alert(name), name))
+                self._welcomes_scheduled.add(name)
+        return tuple(pending)
 
 
 class PersonArrivalTrigger:
@@ -20,6 +70,11 @@ class PersonArrivalTrigger:
         self._positive_count = 0
         self._eligible = False
         self._present = False
+
+    def idle_elapsed(self, now: float | None = None) -> bool:
+        moment = time.monotonic() if now is None else now
+        return (not self._present and self._absence_since is not None
+                and moment - self._absence_since >= self.idle_seconds)
 
     def observe(self, present: bool, now: float | None = None) -> bool:
         moment = time.monotonic() if now is None else now

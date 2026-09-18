@@ -6,6 +6,7 @@ import argparse
 import queue
 import time
 import tkinter as tk
+from collections import deque
 from pathlib import Path
 from tkinter import ttk
 
@@ -17,11 +18,10 @@ from src.camera_speaker import CameraSpeaker, MAX_TEXT_LENGTH
 from src.config import CameraConfig, configure_opencv_ffmpeg, read_credentials
 from src.detector import DetectionResult, YoloDetectorWorker
 from src.lights import CameraWeb, LightsWorker
-from src.person_trigger import PersonArrivalTrigger
+from src.person_trigger import PersonAlertSequence, PersonAnnouncement, PersonArrivalTrigger
 from src.ptz import OnvifPtz, PtzError, PtzWorker
 
 
-PERSON_ALERT = "Se ha identificado un humano"
 PERSON_ALERT_TAG = "person-arrival"
 DETECTION_INTERVAL = 0.2
 RESULT_MAX_AGE = 2.0
@@ -30,7 +30,8 @@ ALERT_RETRY_DELAY = 2.0
 
 class ControlPanel:
     def __init__(self, root: tk.Tk, config: CameraConfig, camera: ReconnectingCamera,
-                 username: str, password: str, idle_seconds: float = 12.0) -> None:
+                 username: str, password: str, idle_seconds: float = 12.0,
+                 faces_dir: Path | None = None, face_threshold: float = 0.50) -> None:
         self.root, self.config, self.camera = root, config, camera
         self.speaker = CameraSpeaker(config.host, config.port, config.path)
         self.lights = LightsWorker(CameraWeb(config.host, username, password))
@@ -38,7 +39,12 @@ class ControlPanel:
         model_name = str(model_path) if model_path.exists() else "yolo11n.pt"
         try:
             self.detector: YoloDetectorWorker | None = YoloDetectorWorker(
-                model_name, allowed_classes=(0,)).start()
+                model_name,
+                allowed_classes=(0,),
+                face_gallery=str(faces_dir) if faces_dir else None,
+                face_model_dir=str(Path(__file__).with_name("models")),
+                face_threshold=face_threshold,
+            ).start()
         except Exception:
             self.detector = None
         try:
@@ -54,11 +60,12 @@ class ControlPanel:
         self.detection_status = tk.StringVar(value="Cargando YOLO nano..." if self.detector
                                              else "YOLO nano no disponible; revisa yolo11n.pt.")
         self.person_trigger = PersonArrivalTrigger(idle_seconds, confirmations=2)
+        self.alert_sequence = PersonAlertSequence()
+        self.alert_queue: deque[PersonAnnouncement] = deque()
         self.last_detection: DetectionResult | None = None
         self.last_detection_sequence = -1
         self.last_detection_submit = 0.0
-        self.alert_pending = False
-        self.alert_in_flight = False
+        self.alert_in_flight: PersonAnnouncement | None = None
         self.alert_retry_count = 0
         self.alert_retry_at = 0.0
         self.last_person_present = False
@@ -270,8 +277,9 @@ class ControlPanel:
 
     def toggle_detection(self) -> None:
         self.person_trigger.reset()
-        self.alert_pending = False
-        self.alert_in_flight = False
+        self.alert_sequence.reset()
+        self.alert_queue.clear()
+        self.alert_in_flight = None
         self.alert_retry_count = 0
         self.alert_retry_at = 0.0
         self.last_person_present = False
@@ -288,31 +296,40 @@ class ControlPanel:
         self.last_detection = result
         self.last_detection_sequence = result.sequence
         people = len(result.detections)
+        identities = sorted({item.identity for item in result.detections if item.identity})
+        identity_status = f" · Rostro: {', '.join(identities)}" if identities else ""
         self.detection_status.set(
-            f"Personas: {people} · inferencia {result.inference_ms:.0f} ms · {self.detector.device}")
+            f"Personas: {people} · inferencia {result.inference_ms:.0f} ms · "
+            f"{self.detector.device}{identity_status}")
         present = people > 0
         self.last_person_present = present
         if self.person_trigger.observe(present, result.completed_at):
-            self.alert_pending = True
+            self.alert_sequence.arm()
             self.alert_retry_count = 0
             self.alert_retry_at = 0.0
-        if not present:
-            self.alert_pending = False
+        if not present and self.person_trigger.idle_elapsed(result.completed_at):
+            self.alert_sequence.reset()
+            self.alert_queue.clear()
             self.alert_retry_count = 0
+            self.alert_retry_at = 0.0
+        elif present:
+            self.alert_queue.extend(self.alert_sequence.announcements(identities))
         self.try_person_alert()
 
     def try_person_alert(self) -> None:
         result = self.last_detection
-        if (not self.alert_pending or self.alert_in_flight or not self.last_person_present
+        if (not self.alert_queue or self.alert_in_flight is not None
+                or not self.last_person_present
                 or result is None or time.monotonic() < self.alert_retry_at
                 or time.monotonic() - result.completed_at > RESULT_MAX_AGE
                 or not self.detection_enabled.get() or not self.camera.connected):
             return
-        if self.speaker.say(PERSON_ALERT, tag=PERSON_ALERT_TAG):
-            self.alert_pending = False
-            self.alert_in_flight = True
+        announcement = self.alert_queue[0]
+        if self.speaker.say(announcement.text, tag=PERSON_ALERT_TAG):
+            self.alert_queue.popleft()
+            self.alert_in_flight = announcement
             self.speak_button.state(["disabled"])
-            self.status.set("Persona identificada; enviando aviso TTS a la cámara.")
+            self.status.set(f"Enviando aviso: «{announcement.text}».")
 
     def refresh_video(self) -> None:
         if self.closing:
@@ -320,9 +337,10 @@ class ControlPanel:
         connected = self.camera.connected
         if connected != self.last_camera_connected:
             self.person_trigger.reset()
+            self.alert_sequence.reset()
+            self.alert_queue.clear()
             self.last_person_present = False
-            self.alert_pending = False
-            self.alert_in_flight = False
+            self.alert_in_flight = None
             self.alert_retry_count = 0
             self.last_detection = None
             if self.detector is not None:
@@ -349,9 +367,15 @@ class ControlPanel:
                     for detection in self.last_detection.detections:
                         x1, y1, x2, y2 = detection.coordinates
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (50, 220, 70), 2)
-                        cv2.putText(frame, f"persona {detection.confidence:.0%}",
+                        label = (f"{detection.identity} {detection.identity_score:.0%}"
+                                 if detection.identity else
+                                 f"persona {detection.confidence:.0%}")
+                        cv2.putText(frame, label,
                                     (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX,
                                     0.52, (50, 220, 70), 2)
+                        if detection.face_coordinates is not None:
+                            fx1, fy1, fx2, fy2 = detection.face_coordinates
+                            cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), (230, 150, 40), 2)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             image = Image.fromarray(rgb)
             image.thumbnail((660, 440))
@@ -368,13 +392,18 @@ class ControlPanel:
                 speech = self.speaker.results.get_nowait()
                 if speech.tag != PERSON_ALERT_TAG:
                     continue
-                self.alert_in_flight = False
+                announcement = self.alert_in_flight
+                self.alert_in_flight = None
                 if (not speech.succeeded and self.last_person_present
-                        and self.detection_enabled.get() and self.alert_retry_count < 1):
+                        and self.detection_enabled.get() and announcement is not None
+                        and self.alert_retry_count < 1):
                     self.alert_retry_count += 1
                     self.alert_retry_at = time.monotonic() + ALERT_RETRY_DELAY
-                    self.alert_pending = True
+                    self.alert_queue.appendleft(announcement)
                     self.status.set("El aviso TTS falló; se reintentará una vez.")
+                else:
+                    self.alert_retry_count = 0
+                    self.alert_retry_at = 0.0
         except queue.Empty:
             pass
         if self.detector is not None:
@@ -386,10 +415,13 @@ class ControlPanel:
                         self.detection_enabled.set(False)
                         self.detector_checkbox.state(["disabled"])
                         self.person_trigger.reset()
-                        self.alert_pending = False
-                        self.alert_in_flight = False
+                        self.alert_sequence.reset()
+                        self.alert_queue.clear()
+                        self.alert_in_flight = None
                     elif self.detector.ready:
                         self.person_trigger.reset()
+                        self.alert_sequence.reset()
+                        self.alert_queue.clear()
             except queue.Empty:
                 pass
         try:
@@ -445,11 +477,21 @@ def main() -> int:
     parser.add_argument("--credentials-file", type=Path)
     parser.add_argument("--host", default=CameraConfig.host,
                         help="IP o nombre de red de la cámara")
+    parser.add_argument("--faces-dir", type=Path,
+                        help="Galería local: una subcarpeta con fotos por identidad")
+    parser.add_argument("--face-threshold", type=float, default=0.50,
+                        help="Similitud mínima para mostrar una identidad (0-1)")
     parser.add_argument("--idle-seconds", type=float, default=12.0,
                         help="Segundos sin personas antes de permitir otro aviso (10-15)")
     args = parser.parse_args()
     if not 10.0 <= args.idle_seconds <= 15.0:
         print("Error: --idle-seconds debe estar entre 10 y 15.")
+        return 2
+    if not 0.30 <= args.face_threshold <= 0.90:
+        print("Error: --face-threshold debe estar entre 0.30 y 0.90.")
+        return 2
+    if args.faces_dir is not None and not args.faces_dir.is_dir():
+        print("Error: --faces-dir no existe o no es una carpeta.")
         return 2
     try:
         username, password = read_credentials(args.credentials_file)
@@ -461,7 +503,8 @@ def main() -> int:
     camera = ReconnectingCamera(config.make_url(username, password)).start()
     try:
         root = tk.Tk()
-        ControlPanel(root, config, camera, username, password, args.idle_seconds)
+        ControlPanel(root, config, camera, username, password, args.idle_seconds,
+                     args.faces_dir, args.face_threshold)
         root.mainloop()
     finally:
         camera.close()

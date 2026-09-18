@@ -114,7 +114,12 @@ def synthesize_pcmu(text: str) -> bytes:
     """Genera voz localmente y devuelve bytes G.711 μ-law a 8 kHz."""
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
-        raise SpeakerError("no se encontró FFmpeg; abre una terminal nueva")
+        try:
+            import imageio_ffmpeg
+
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        except (ImportError, OSError) as error:
+            raise SpeakerError("no se encontró FFmpeg; reinstala requirements.txt") from error
     with tempfile.TemporaryDirectory(prefix="cameracaptor_speech_") as temp:
         wave_path = Path(temp) / "speech.wav"
         safe_path = str(wave_path).replace("'", "''")

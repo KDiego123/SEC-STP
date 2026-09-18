@@ -1,2 +1,8 @@
-cd C:\Users\XXX\XXXX\CAMERACAPTOR
-.\.venv\Scripts\python.exe .\control_panel.py --credentials-file .\claves.txt --host 192.168.100.109
+PRIMERA VEZ:
+.\instalar.bat
+
+PARA ABRIR EL PANEL:
+.\ejecutar_panel.bat
+
+PARA USAR OTRA IP:
+.\ejecutar_panel.bat 192.168.100.109

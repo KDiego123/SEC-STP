@@ -2,11 +2,9 @@
 __pycache__/
 *.py[cod]
 .env
-claves.txt
 captures/
 recordings/
 events/
 runs/
-*.pt
-*.onnx
 *.engine
+FACEV2-main/

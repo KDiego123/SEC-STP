@@ -1,6 +1,10 @@
 import unittest
 
-from src.person_trigger import PersonArrivalTrigger
+from src.person_trigger import (
+    ENTRY_ALERT,
+    PersonAlertSequence,
+    PersonArrivalTrigger,
+)
 
 
 class PersonArrivalTriggerTests(unittest.TestCase):
@@ -43,6 +47,45 @@ class PersonArrivalTriggerTests(unittest.TestCase):
         trigger.observe(False, 1001.0)
         self.assertFalse(trigger.observe(True, 1014.0))
         self.assertTrue(trigger.observe(True, 1014.5))
+
+    def test_idle_elapsed_ignores_brief_detection_gap(self):
+        trigger = PersonArrivalTrigger(12.0, 2)
+        trigger.observe(False, 10.0)
+        self.assertFalse(trigger.idle_elapsed(21.9))
+        self.assertTrue(trigger.idle_elapsed(22.0))
+        trigger.observe(True, 22.1)
+        self.assertFalse(trigger.idle_elapsed(30.0))
+
+
+class PersonAlertSequenceTests(unittest.TestCase):
+    def test_inactive_sequence_does_not_announce(self):
+        sequence = PersonAlertSequence()
+        self.assertEqual(sequence.announcements(("Brayan",)), ())
+
+    def test_entry_is_announced_before_known_identity(self):
+        sequence = PersonAlertSequence()
+        sequence.arm()
+        messages = sequence.announcements(("Brayan",))
+        self.assertEqual([message.text for message in messages], [
+            ENTRY_ALERT,
+            "Bienvenido Brayan",
+        ])
+
+    def test_late_identity_creates_second_announcement(self):
+        sequence = PersonAlertSequence()
+        sequence.arm()
+        self.assertEqual(sequence.announcements(())[0].text, ENTRY_ALERT)
+        messages = sequence.announcements(("Brayan",))
+        self.assertEqual([message.text for message in messages], ["Bienvenido Brayan"])
+
+    def test_identity_is_not_repeated_during_same_arrival(self):
+        sequence = PersonAlertSequence()
+        sequence.arm()
+        sequence.announcements(("Brayan",))
+        self.assertEqual(sequence.announcements(("Brayan",)), ())
+        sequence.reset()
+        sequence.arm()
+        self.assertEqual(len(sequence.announcements(("Brayan",))), 2)
 
 
 if __name__ == "__main__":
