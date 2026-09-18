@@ -23,7 +23,7 @@ from src.ptz import OnvifPtz, PtzError, PtzWorker
 
 PERSON_ALERT = "Se ha identificado un humano"
 PERSON_ALERT_TAG = "person-arrival"
-DETECTION_INTERVAL = 0.5
+DETECTION_INTERVAL = 0.2
 RESULT_MAX_AGE = 2.0
 ALERT_RETRY_DELAY = 2.0
 
@@ -443,6 +443,8 @@ class ControlPanel:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Panel YOLO, TTS y PTZ de CameraCaptor")
     parser.add_argument("--credentials-file", type=Path)
+    parser.add_argument("--host", default=CameraConfig.host,
+                        help="IP o nombre de red de la cámara")
     parser.add_argument("--idle-seconds", type=float, default=12.0,
                         help="Segundos sin personas antes de permitir otro aviso (10-15)")
     args = parser.parse_args()
@@ -455,7 +457,7 @@ def main() -> int:
         print(f"Error: {error}.")
         return 2
     configure_opencv_ffmpeg()
-    config = CameraConfig(path="/stream2")
+    config = CameraConfig(host=args.host, path="/stream2")
     camera = ReconnectingCamera(config.make_url(username, password)).start()
     try:
         root = tk.Tk()

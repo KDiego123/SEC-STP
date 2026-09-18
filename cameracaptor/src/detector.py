@@ -89,8 +89,22 @@ class YoloDetectorWorker:
     def _run(self) -> None:
         try:
             self._model = YOLO(self._model_name)
+            self.updates.put("YOLO nano cargado; preparando detección rápida...")
+            # La primera inferencia inicializa internamente el modelo y puede tardar
+            # varios segundos. Hacerla aquí evita cargar ese coste a la primera
+            # persona que aparezca frente a la cámara.
+            self._model.predict(
+                np.zeros((self._image_size, self._image_size, 3), dtype=np.uint8),
+                conf=self._confidence,
+                imgsz=self._image_size,
+                classes=list(self._allowed_classes),
+                device=self.device,
+                verbose=False,
+            )
         except Exception as error:
-            self.updates.put(f"YOLO: no se pudo cargar el modelo ({type(error).__name__}).")
+            self.updates.put(
+                f"YOLO: no se pudo cargar o preparar el modelo ({type(error).__name__})."
+            )
             self._failed.set()
             return
         self._ready.set()
