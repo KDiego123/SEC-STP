@@ -40,14 +40,17 @@ El umbral de ausencia previo a un nuevo aviso de persona puede ajustarse entre
 
 ```powershell
 .\.venv\Scripts\python control_panel.py --credentials-file .\claves.txt `
-  --host 192.168.10.143 --faces-dir .\face_gallery --idle-seconds 12
+  --host 192.168.10.143 --faces-dir .\face_gallery `
+  --presence-seconds 1.5 --idle-seconds 12
 ```
 
 ## Funcionamiento
 
 YOLO procesa solamente la clase `person`. El modelo se prepara al arrancar y
 analiza hasta cinco fotogramas por segundo. Después del intervalo configurado
-sin personas, dos detecciones positivas consecutivas habilitan un solo aviso.
+sin personas, la detección debe mantenerse durante 1,5 segundos continuos. Al
+cumplirse ese tiempo, el aviso se envía inmediatamente y una detección negativa
+reinicia la validación.
 Primero dice «Se ha identificado a alguien en la entrada». La llegada permanece
 activa y, si después reconoce un rostro conocido, emite una segunda frase como
 «Bienvenido Brayan». Ninguna de las dos frases se repite continuamente.

@@ -31,7 +31,8 @@ ALERT_RETRY_DELAY = 2.0
 class ControlPanel:
     def __init__(self, root: tk.Tk, config: CameraConfig, camera: ReconnectingCamera,
                  username: str, password: str, idle_seconds: float = 12.0,
-                 faces_dir: Path | None = None, face_threshold: float = 0.50) -> None:
+                 presence_seconds: float = 1.5, faces_dir: Path | None = None,
+                 face_threshold: float = 0.50) -> None:
         self.root, self.config, self.camera = root, config, camera
         self.speaker = CameraSpeaker(config.host, config.port, config.path)
         self.lights = LightsWorker(CameraWeb(config.host, username, password))
@@ -59,7 +60,7 @@ class ControlPanel:
         self.detection_enabled = tk.BooleanVar(value=self.detector is not None)
         self.detection_status = tk.StringVar(value="Cargando YOLO nano..." if self.detector
                                              else "YOLO nano no disponible; revisa yolo11n.pt.")
-        self.person_trigger = PersonArrivalTrigger(idle_seconds, confirmations=2)
+        self.person_trigger = PersonArrivalTrigger(idle_seconds, presence_seconds)
         self.alert_sequence = PersonAlertSequence()
         self.alert_queue: deque[PersonAnnouncement] = deque()
         self.last_detection: DetectionResult | None = None
@@ -102,7 +103,9 @@ class ControlPanel:
         yolo_box = ttk.LabelFrame(left, text="Detección inteligente", padding=(8, 5))
         yolo_box.pack(fill="x", pady=(7, 0))
         self.detector_checkbox = ttk.Checkbutton(
-            yolo_box, text=f"YOLO personas + aviso TTS ({idle_seconds:g} s)",
+            yolo_box,
+            text=(f"YOLO personas · validar {presence_seconds:g} s · "
+                  f"rearme {idle_seconds:g} s"),
             variable=self.detection_enabled, command=self.toggle_detection)
         self.detector_checkbox.pack(side="left", anchor="w")
         if self.detector is None:
@@ -483,9 +486,14 @@ def main() -> int:
                         help="Similitud mínima para mostrar una identidad (0-1)")
     parser.add_argument("--idle-seconds", type=float, default=12.0,
                         help="Segundos sin personas antes de permitir otro aviso (10-15)")
+    parser.add_argument("--presence-seconds", type=float, default=1.5,
+                        help="Presencia continua antes del aviso (0.5-5)")
     args = parser.parse_args()
     if not 10.0 <= args.idle_seconds <= 15.0:
         print("Error: --idle-seconds debe estar entre 10 y 15.")
+        return 2
+    if not 0.5 <= args.presence_seconds <= 5.0:
+        print("Error: --presence-seconds debe estar entre 0.5 y 5.")
         return 2
     if not 0.30 <= args.face_threshold <= 0.90:
         print("Error: --face-threshold debe estar entre 0.30 y 0.90.")
@@ -503,8 +511,13 @@ def main() -> int:
     camera = ReconnectingCamera(config.make_url(username, password)).start()
     try:
         root = tk.Tk()
-        ControlPanel(root, config, camera, username, password, args.idle_seconds,
-                     args.faces_dir, args.face_threshold)
+        ControlPanel(
+            root, config, camera, username, password,
+            idle_seconds=args.idle_seconds,
+            presence_seconds=args.presence_seconds,
+            faces_dir=args.faces_dir,
+            face_threshold=args.face_threshold,
+        )
         root.mainloop()
     finally:
         camera.close()

@@ -8,53 +8,66 @@ from src.person_trigger import (
 
 
 class PersonArrivalTriggerTests(unittest.TestCase):
-    def test_alert_only_after_observed_idle_and_two_confirmations(self):
-        trigger = PersonArrivalTrigger(12.0, 2, started_at=0.0)
+    def test_alert_immediately_after_sustained_presence(self):
+        trigger = PersonArrivalTrigger(12.0, 1.5, started_at=0.0)
         self.assertFalse(trigger.observe(False, 11.0))
         self.assertFalse(trigger.observe(True, 12.5))
-        self.assertTrue(trigger.observe(True, 13.0))
+        self.assertFalse(trigger.observe(True, 13.99))
+        self.assertTrue(trigger.observe(True, 14.0))
         self.assertFalse(trigger.observe(True, 30.0))
 
     def test_short_absence_does_not_repeat(self):
-        trigger = PersonArrivalTrigger(12.0, 2, started_at=0.0)
+        trigger = PersonArrivalTrigger(12.0, 1.5, started_at=0.0)
         trigger.observe(True, 13.0)
-        trigger.observe(True, 13.5)
+        trigger.observe(True, 14.5)
         trigger.observe(False, 20.0)
         self.assertFalse(trigger.observe(True, 25.0))
-        self.assertFalse(trigger.observe(True, 25.5))
-        trigger.observe(False, 26.0)
-        self.assertFalse(trigger.observe(True, 39.0))
-        self.assertTrue(trigger.observe(True, 39.5))
+        self.assertFalse(trigger.observe(True, 30.0))
+        trigger.observe(False, 31.0)
+        self.assertFalse(trigger.observe(True, 44.0))
+        self.assertFalse(trigger.observe(True, 45.49))
+        self.assertTrue(trigger.observe(True, 45.5))
 
     def test_startup_presence_does_not_count_as_idle(self):
-        trigger = PersonArrivalTrigger(12.0, 2, started_at=0.0)
+        trigger = PersonArrivalTrigger(12.0, 1.5, started_at=0.0)
         self.assertFalse(trigger.observe(True, 1.0))
         self.assertFalse(trigger.observe(True, 2.0))
         trigger.observe(False, 3.0)
         self.assertFalse(trigger.observe(True, 15.0))
-        self.assertTrue(trigger.observe(True, 15.5))
+        self.assertFalse(trigger.observe(True, 16.49))
+        self.assertTrue(trigger.observe(True, 16.5))
 
     def test_reset_requires_new_idle_window(self):
-        trigger = PersonArrivalTrigger(12.0, 2, started_at=0.0)
+        trigger = PersonArrivalTrigger(12.0, 1.5, started_at=0.0)
         trigger.reset(20.0)
         self.assertFalse(trigger.observe(True, 25.0))
-        self.assertFalse(trigger.observe(True, 25.5))
+        self.assertFalse(trigger.observe(True, 30.0))
 
     def test_unobserved_startup_time_does_not_arm(self):
-        trigger = PersonArrivalTrigger(12.0, 2)
+        trigger = PersonArrivalTrigger(12.0, 1.5)
         self.assertFalse(trigger.observe(True, 1000.0))
         self.assertFalse(trigger.observe(True, 1000.5))
         trigger.observe(False, 1001.0)
         self.assertFalse(trigger.observe(True, 1014.0))
-        self.assertTrue(trigger.observe(True, 1014.5))
+        self.assertFalse(trigger.observe(True, 1015.49))
+        self.assertTrue(trigger.observe(True, 1015.5))
 
     def test_idle_elapsed_ignores_brief_detection_gap(self):
-        trigger = PersonArrivalTrigger(12.0, 2)
+        trigger = PersonArrivalTrigger(12.0, 1.5)
         trigger.observe(False, 10.0)
         self.assertFalse(trigger.idle_elapsed(21.9))
         self.assertTrue(trigger.idle_elapsed(22.0))
         trigger.observe(True, 22.1)
         self.assertFalse(trigger.idle_elapsed(30.0))
+
+    def test_detection_gap_restarts_presence_validation(self):
+        trigger = PersonArrivalTrigger(12.0, 1.5, started_at=0.0)
+        self.assertFalse(trigger.observe(True, 13.0))
+        self.assertFalse(trigger.observe(True, 14.4))
+        self.assertFalse(trigger.observe(False, 14.5))
+        self.assertFalse(trigger.observe(True, 27.0))
+        self.assertFalse(trigger.observe(True, 28.49))
+        self.assertTrue(trigger.observe(True, 28.5))
 
 
 class PersonAlertSequenceTests(unittest.TestCase):
