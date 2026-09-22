@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-set "CAMERA_HOST=192.168.100.109"
+set "CAMERA_HOST=192.168.10.143"
 if not "%~1"=="" set "CAMERA_HOST=%~1"
 
 if not exist ".venv\Scripts\python.exe" (

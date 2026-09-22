@@ -29,10 +29,10 @@ compatible mediante `imageio-ffmpeg`.
 .\ejecutar_panel.bat
 ```
 
-El script usa `192.168.100.109` por defecto. Para indicar otra IP:
+El script usa `192.168.10.143` por defecto. Para indicar otra IP:
 
 ```powershell
-.\ejecutar_panel.bat 192.168.100.109
+.\ejecutar_panel.bat 192.168.10.143
 ```
 
 El umbral de ausencia previo a un nuevo aviso de persona puede ajustarse entre
@@ -40,7 +40,7 @@ El umbral de ausencia previo a un nuevo aviso de persona puede ajustarse entre
 
 ```powershell
 .\.venv\Scripts\python control_panel.py --credentials-file .\claves.txt `
-  --host 192.168.100.109 --faces-dir .\face_gallery --idle-seconds 12
+  --host 192.168.10.143 --faces-dir .\face_gallery --idle-seconds 12
 ```
 
 ## Funcionamiento
@@ -68,7 +68,7 @@ directamente con la galería versionada:
 
 ```powershell
 .\.venv\Scripts\python control_panel.py --credentials-file .\claves.txt `
-  --host 192.168.100.109 `
+  --host 192.168.10.143 `
   --faces-dir .\face_gallery
 ```
 
