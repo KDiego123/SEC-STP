@@ -18,7 +18,13 @@ from src.camera_speaker import CameraSpeaker, MAX_TEXT_LENGTH
 from src.config import CameraConfig, configure_opencv_ffmpeg, read_credentials
 from src.detector import DetectionResult, YoloDetectorWorker
 from src.lights import CameraWeb, LightsWorker
-from src.person_trigger import PersonAlertSequence, PersonAnnouncement, PersonArrivalTrigger
+from src.person_trigger import (
+    ENTRY_ALERT,
+    PersonAlertSequence,
+    PersonAnnouncement,
+    PersonArrivalTrigger,
+    welcome_alert,
+)
 from src.ptz import OnvifPtz, PtzError, PtzWorker
 
 
@@ -35,6 +41,13 @@ class ControlPanel:
                  face_threshold: float = 0.50) -> None:
         self.root, self.config, self.camera = root, config, camera
         self.speaker = CameraSpeaker(config.host, config.port, config.path)
+        known_names = (
+            [path.name for path in faces_dir.iterdir() if path.is_dir()]
+            if faces_dir is not None else []
+        )
+        self.speaker.preload(
+            [ENTRY_ALERT, *(welcome_alert(name) for name in sorted(known_names))]
+        )
         self.lights = LightsWorker(CameraWeb(config.host, username, password))
         model_path = Path(__file__).with_name("yolo11n.pt")
         model_name = str(model_path) if model_path.exists() else "yolo11n.pt"
@@ -325,8 +338,16 @@ class ControlPanel:
                 )
                 if (self.alert_in_flight is not None
                         and self.alert_in_flight.kind == "entry"):
-                    self.speaker.interrupt(PERSON_ALERT_TAG)
-                    self.alert_in_flight = None
+                    priority = welcomes.pop(0)
+                    if self.speaker.replace(priority.text, tag=PERSON_ALERT_TAG):
+                        self.alert_in_flight = priority
+                        self.status.set(
+                            f"Aviso prioritario: «{priority.text}»."
+                        )
+                    else:
+                        self.speaker.interrupt(PERSON_ALERT_TAG)
+                        self.alert_in_flight = None
+                        welcomes.insert(0, priority)
                     self.alert_retry_count = 0
                     self.alert_retry_at = 0.0
                 self.alert_queue.extend(welcomes)
@@ -411,6 +432,9 @@ class ControlPanel:
                 if speech.tag != PERSON_ALERT_TAG:
                     continue
                 announcement = self.alert_in_flight
+                if announcement is None or speech.text != announcement.text:
+                    # Resultado tardío de un aviso que fue sustituido.
+                    continue
                 self.alert_in_flight = None
                 if (not speech.succeeded and self.last_person_present
                         and self.detection_enabled.get() and announcement is not None

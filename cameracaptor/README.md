@@ -60,7 +60,9 @@ repiten continuamente.
 El TTS se sintetiza con Windows SAPI y se transmite como audio G.711 μ-law por
 el backchannel RTSP. Después de un periodo sin utilizar el audio, el programa
 reactiva primero la sesión de la cámara para evitar que el primer mensaje se
-pierda.
+pierda. Los avisos de entrada y las bienvenidas conocidas se sintetizan en
+segundo plano al abrir el panel. Si aparece una identidad durante el aviso
+general, la bienvenida sustituye el audio activo sin repetir el precalentamiento.
 
 Los focos y el modo de imagen tienen controles separados. El firmware de esta
 cámara no permite garantizar focos blancos encendidos mientras permanece en
