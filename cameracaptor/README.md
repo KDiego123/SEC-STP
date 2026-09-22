@@ -52,8 +52,10 @@ sin personas, la detección debe mantenerse durante 1,5 segundos continuos. Al
 cumplirse ese tiempo, el aviso se envía inmediatamente y una detección negativa
 reinicia la validación.
 Primero dice «Se ha identificado a alguien en la entrada». La llegada permanece
-activa y, si después reconoce un rostro conocido, emite una segunda frase como
-«Bienvenido Brayan». Ninguna de las dos frases se repite continuamente.
+activa y, si después reconoce un rostro conocido, interrumpe ese aviso general y
+da prioridad inmediata a una frase como «Bienvenido Brayan». Si la identidad ya
+está disponible desde el principio, omite el aviso general. Las frases no se
+repiten continuamente.
 
 El TTS se sintetiza con Windows SAPI y se transmite como audio G.711 μ-law por
 el backchannel RTSP. Después de un periodo sin utilizar el audio, el programa

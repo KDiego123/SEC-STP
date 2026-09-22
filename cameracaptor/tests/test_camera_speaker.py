@@ -1,4 +1,6 @@
 import unittest
+import threading
+import time
 from unittest.mock import patch
 
 from src.camera_speaker import (
@@ -40,6 +42,35 @@ class CameraSpeakerTests(unittest.TestCase):
             result = speaker.results.get(timeout=2)
             self.assertFalse(result.succeeded)
             self.assertEqual(result.tag, "alerta")
+        finally:
+            speaker.close()
+
+    @patch("src.camera_speaker.synthesize_pcmu", return_value=b"\xaa" * 1600)
+    @patch("src.camera_speaker.send_pcmu")
+    def test_tagged_audio_can_be_interrupted(self, send, synthesize):
+        started = threading.Event()
+
+        def cancellable_send(host, port, path, audio, stop):
+            started.set()
+            for _ in range(100):
+                if stop.is_set():
+                    return 1
+                time.sleep(0.005)
+            return len(audio) // 160
+
+        send.side_effect = cancellable_send
+        speaker = CameraSpeaker("192.0.2.1", 554, "/stream2")
+        try:
+            # Evita consumir tiempo en el precalentamiento durante esta prueba.
+            speaker._last_playback_at = time.monotonic()
+            self.assertTrue(speaker.say("aviso general", tag="persona"))
+            self.assertTrue(started.wait(timeout=2))
+            self.assertFalse(speaker.interrupt("otra-etiqueta"))
+            self.assertTrue(speaker.interrupt("persona"))
+            result = speaker.results.get(timeout=2)
+            self.assertFalse(result.succeeded)
+            self.assertTrue(result.interrupted)
+            self.assertEqual(result.text, "aviso general")
         finally:
             speaker.close()
 

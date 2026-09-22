@@ -316,7 +316,22 @@ class ControlPanel:
             self.alert_retry_count = 0
             self.alert_retry_at = 0.0
         elif present:
-            self.alert_queue.extend(self.alert_sequence.announcements(identities))
+            announcements = self.alert_sequence.announcements(identities)
+            welcomes = [item for item in announcements if item.kind == "welcome"]
+            if welcomes:
+                # La identidad conocida desplaza cualquier aviso genérico pendiente.
+                self.alert_queue = deque(
+                    item for item in self.alert_queue if item.kind != "entry"
+                )
+                if (self.alert_in_flight is not None
+                        and self.alert_in_flight.kind == "entry"):
+                    self.speaker.interrupt(PERSON_ALERT_TAG)
+                    self.alert_in_flight = None
+                    self.alert_retry_count = 0
+                    self.alert_retry_at = 0.0
+                self.alert_queue.extend(welcomes)
+            else:
+                self.alert_queue.extend(announcements)
         self.try_person_alert()
 
     def try_person_alert(self) -> None:

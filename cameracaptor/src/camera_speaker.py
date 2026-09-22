@@ -34,6 +34,7 @@ class SpeechResult:
     text: str
     tag: str | None
     succeeded: bool
+    interrupted: bool = False
 
 
 def _rtsp_response(connection: socket.socket) -> tuple[str, dict[str, str], bytes]:
@@ -244,9 +245,14 @@ class CameraSpeaker:
 
     def __init__(self, host: str, port: int, path: str) -> None:
         self.host, self.port, self.path = host, port, path
-        self._messages: queue.Queue[tuple[str, str | None]] = queue.Queue(maxsize=1)
+        self._messages: queue.Queue[
+            tuple[str, str | None, threading.Event]
+        ] = queue.Queue(maxsize=1)
         self._stop = threading.Event()
         self._busy = threading.Event()
+        self._state_lock = threading.Lock()
+        self._current_tag: str | None = None
+        self._current_cancel: threading.Event | None = None
         self._last_playback_at: float | None = None
         self.updates: queue.Queue[str] = queue.Queue()
         self.results: queue.Queue[SpeechResult] = queue.Queue()
@@ -259,17 +265,34 @@ class CameraSpeaker:
 
     def say(self, text: str, tag: str | None = None) -> bool:
         text = text.strip().replace("\x00", "")
-        if not text or len(text) > MAX_TEXT_LENGTH or self._busy.is_set():
+        if not text or len(text) > MAX_TEXT_LENGTH:
             return False
-        self._busy.set()
-        try:
-            self._messages.put_nowait((text, tag))
-        except queue.Full:
-            self._busy.clear()
-            return False
+        with self._state_lock:
+            if self._busy.is_set():
+                return False
+            cancel = threading.Event()
+            self._busy.set()
+            self._current_tag = tag
+            self._current_cancel = cancel
+            try:
+                self._messages.put_nowait((text, tag, cancel))
+            except queue.Full:
+                self._current_tag = None
+                self._current_cancel = None
+                self._busy.clear()
+                return False
         return True
 
-    def _wake_if_idle(self) -> None:
+    def interrupt(self, tag: str | None = None) -> bool:
+        """Interrumpe el audio actual si coincide con la etiqueta indicada."""
+        with self._state_lock:
+            if (not self._busy.is_set() or self._current_cancel is None
+                    or (tag is not None and tag != self._current_tag)):
+                return False
+            self._current_cancel.set()
+            return True
+
+    def _wake_if_idle(self, cancel: threading.Event) -> None:
         now = time.monotonic()
         if (self._last_playback_at is not None
                 and now - self._last_playback_at < SPEAKER_WAKE_AFTER_SECONDS):
@@ -277,34 +300,51 @@ class CameraSpeaker:
         self.updates.put("Activando el canal de audio de la cámara...")
         wake_audio = b"\xff" * int(8000 * SPEAKER_WAKE_AUDIO_SECONDS)
         try:
-            send_pcmu(self.host, self.port, self.path, wake_audio, self._stop)
+            send_pcmu(self.host, self.port, self.path, wake_audio, cancel)
         except SpeakerError:
             # La sesión real se intenta igualmente: el precalentamiento es preventivo.
             pass
-        self._stop.wait(SPEAKER_WAKE_DELAY_SECONDS)
+        cancel.wait(SPEAKER_WAKE_DELAY_SECONDS)
 
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                text, tag = self._messages.get(timeout=0.2)
+                text, tag, cancel = self._messages.get(timeout=0.2)
             except queue.Empty:
                 continue
             succeeded = False
+            interrupted = False
             try:
                 self.updates.put("Sintetizando voz local...")
                 audio = synthesize_pcmu(text)
-                self._wake_if_idle()
+                if cancel.is_set() or self._stop.is_set():
+                    interrupted = True
+                    continue
+                self._wake_if_idle(cancel)
+                if cancel.is_set() or self._stop.is_set():
+                    interrupted = True
+                    continue
                 self.updates.put("Enviando audio a la cámara...")
-                packets = send_pcmu(self.host, self.port, self.path, audio, self._stop)
+                packets = send_pcmu(self.host, self.port, self.path, audio, cancel)
+                if cancel.is_set() or self._stop.is_set():
+                    interrupted = True
+                    continue
                 self._last_playback_at = time.monotonic()
                 succeeded = True
                 self.updates.put(f"Audio enviado ({packets * 0.02:.1f} s)")
             except SpeakerError as error:
                 self.updates.put(f"Audio: {error}")
             finally:
-                self.results.put(SpeechResult(text, tag, succeeded))
-                self._busy.clear()
+                if interrupted:
+                    self.updates.put("Audio interrumpido por un aviso prioritario.")
+                self.results.put(SpeechResult(text, tag, succeeded, interrupted))
+                with self._state_lock:
+                    if self._current_cancel is cancel:
+                        self._current_tag = None
+                        self._current_cancel = None
+                        self._busy.clear()
 
     def close(self) -> None:
         self._stop.set()
+        self.interrupt()
         self._thread.join(timeout=6)
