@@ -2,7 +2,8 @@
 setlocal
 cd /d "%~dp0"
 
-set "CAMERA_HOST=192.168.10.143"
+rem IP de respaldo: el panel busca primero la MAC por ONVIF en todas las redes.
+set "CAMERA_HOST=192.168.1.51"
 if not "%~1"=="" set "CAMERA_HOST=%~1"
 
 if not exist ".venv\Scripts\python.exe" (

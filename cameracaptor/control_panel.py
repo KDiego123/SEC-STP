@@ -17,6 +17,7 @@ from src.camera import ReconnectingCamera
 from src.camera_speaker import CameraSpeaker, MAX_TEXT_LENGTH
 from src.config import CameraConfig, configure_opencv_ffmpeg, read_credentials
 from src.detector import DetectionResult, YoloDetectorWorker
+from src.discovery import DEFAULT_CAMERA_MAC, resolve_camera_host
 from src.lights import CameraWeb, LightsWorker
 from src.person_trigger import (
     ENTRY_ALERT,
@@ -518,7 +519,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Panel YOLO, TTS y PTZ de CameraCaptor")
     parser.add_argument("--credentials-file", type=Path)
     parser.add_argument("--host", default=CameraConfig.host,
-                        help="IP o nombre de red de la cámara")
+                        help="IP preferida; ONVIF la corrige si cambió")
+    parser.add_argument("--camera-mac", default=DEFAULT_CAMERA_MAC,
+                        help="MAC usada para identificar la cámara por ONVIF")
     parser.add_argument("--faces-dir", type=Path,
                         help="Galería local: una subcarpeta con fotos por identidad")
     parser.add_argument("--face-threshold", type=float, default=0.50,
@@ -546,7 +549,9 @@ def main() -> int:
         print(f"Error: {error}.")
         return 2
     configure_opencv_ffmpeg()
-    config = CameraConfig(host=args.host, path="/stream2")
+    host, discovery_source = resolve_camera_host(args.host, args.camera_mac)
+    print(f"Cámara: {host} ({discovery_source}).")
+    config = CameraConfig(host=host, path="/stream2")
     camera = ReconnectingCamera(config.make_url(username, password)).start()
     try:
         root = tk.Tk()

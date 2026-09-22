@@ -4,5 +4,7 @@ PRIMERA VEZ:
 PARA ABRIR EL PANEL:
 .\ejecutar_panel.bat
 
-PARA USAR OTRA IP:
-.\ejecutar_panel.bat 192.168.10.143
+IP OPCIONAL DE RESPALDO (NORMALMENTE NO HACE FALTA):
+.\ejecutar_panel.bat 192.168.1.51
+
+El panel localiza automáticamente la cámara por su MAC mediante ONVIF.

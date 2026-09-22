@@ -19,7 +19,7 @@ En Windows, instala Python 3 (probado con Python 3.13) y ejecuta una sola vez:
 ```
 
 El branch incluye el modelo YOLO, los modelos faciales YuNet/SFace, la galería
-de Brayan y `claves.txt`, tal como se requiere para esta cámara en la red local.
+de identidades y `claves.txt`, tal como se requiere para esta cámara en la red local.
 No hace falta instalar FFmpeg por separado: `requirements.txt` instala una copia
 compatible mediante `imageio-ffmpeg`.
 
@@ -29,10 +29,15 @@ compatible mediante `imageio-ffmpeg`.
 .\ejecutar_panel.bat
 ```
 
-El script usa `192.168.10.143` por defecto. Para indicar otra IP:
+El script busca automáticamente la cámara mediante ONVIF en todas las interfaces
+IPv4 activas y verifica su identidad con la MAC `E8:B7:23:47:95:27`. Esto permite
+usar la conexión Ethernet directa (`192.168.1.51`) o una IP entregada por el
+router sin editar archivos. La IP del lanzador solo funciona como respaldo.
+
+Para indicar manualmente una IP preferida:
 
 ```powershell
-.\ejecutar_panel.bat 192.168.10.143
+.\ejecutar_panel.bat 192.168.1.51
 ```
 
 El umbral de ausencia previo a un nuevo aviso de persona puede ajustarse entre
@@ -40,7 +45,7 @@ El umbral de ausencia previo a un nuevo aviso de persona puede ajustarse entre
 
 ```powershell
 .\.venv\Scripts\python control_panel.py --credentials-file .\claves.txt `
-  --host 192.168.10.143 --faces-dir .\face_gallery `
+  --host 192.168.1.51 --faces-dir .\face_gallery `
   --presence-seconds 1.5 --idle-seconds 12
 ```
 
