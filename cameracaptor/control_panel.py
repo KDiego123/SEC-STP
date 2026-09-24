@@ -30,16 +30,20 @@ from src.ptz import OnvifPtz, PtzError, PtzWorker
 
 
 PERSON_ALERT_TAG = "person-arrival"
-DETECTION_INTERVAL = 0.2
+DETECTION_INTERVAL = 0.1
 RESULT_MAX_AGE = 2.0
 ALERT_RETRY_DELAY = 2.0
+FAST_PRESENCE_SECONDS = 0.6
+STRONG_PERSON_CONFIDENCE = 0.70
 
 
 class ControlPanel:
     def __init__(self, root: tk.Tk, config: CameraConfig, camera: ReconnectingCamera,
                  username: str, password: str, idle_seconds: float = 12.0,
                  presence_seconds: float = 1.5, faces_dir: Path | None = None,
-                 face_threshold: float = 0.50) -> None:
+                 face_threshold: float = 0.50,
+                 fast_presence_seconds: float = FAST_PRESENCE_SECONDS,
+                 strong_person_confidence: float = STRONG_PERSON_CONFIDENCE) -> None:
         self.root, self.config, self.camera = root, config, camera
         self.speaker = CameraSpeaker(config.host, config.port, config.path)
         known_names = (
@@ -75,6 +79,8 @@ class ControlPanel:
         self.detection_status = tk.StringVar(value="Cargando YOLO nano..." if self.detector
                                              else "YOLO nano no disponible; revisa yolo11n.pt.")
         self.person_trigger = PersonArrivalTrigger(idle_seconds, presence_seconds)
+        self.fast_presence_seconds = fast_presence_seconds
+        self.strong_person_confidence = strong_person_confidence
         self.alert_sequence = PersonAlertSequence()
         self.alert_queue: deque[PersonAnnouncement] = deque()
         self.last_detection: DetectionResult | None = None
@@ -118,7 +124,8 @@ class ControlPanel:
         yolo_box.pack(fill="x", pady=(7, 0))
         self.detector_checkbox = ttk.Checkbutton(
             yolo_box,
-            text=(f"YOLO personas · validar {presence_seconds:g} s · "
+            text=(f"YOLO personas · validar {fast_presence_seconds:g}–"
+                  f"{presence_seconds:g} s · "
                   f"rearme {idle_seconds:g} s"),
             variable=self.detection_enabled, command=self.toggle_detection)
         self.detector_checkbox.pack(side="left", anchor="w")
@@ -319,8 +326,18 @@ class ControlPanel:
             f"Personas: {people} · inferencia {result.inference_ms:.0f} ms · "
             f"{self.detector.device}{identity_status}")
         present = people > 0
+        strongest_confidence = max(
+            (item.confidence for item in result.detections), default=0.0
+        )
+        required_presence = (
+            self.fast_presence_seconds
+            if strongest_confidence >= self.strong_person_confidence
+            else self.person_trigger.confirmation_seconds
+        )
         self.last_person_present = present
-        if self.person_trigger.observe(present, result.completed_at):
+        if self.person_trigger.observe(
+                present, result.completed_at,
+                confirmation_seconds=required_presence):
             self.alert_sequence.arm()
             self.alert_retry_count = 0
             self.alert_retry_at = 0.0
@@ -529,13 +546,28 @@ def main() -> int:
     parser.add_argument("--idle-seconds", type=float, default=12.0,
                         help="Segundos sin personas antes de permitir otro aviso (10-15)")
     parser.add_argument("--presence-seconds", type=float, default=1.5,
-                        help="Presencia continua antes del aviso (0.5-5)")
+                        help="Validación de detecciones dudosas (0.5-5)")
+    parser.add_argument("--fast-presence-seconds", type=float,
+                        default=FAST_PRESENCE_SECONDS,
+                        help="Validación de detecciones claras (0.3-1.5)")
+    parser.add_argument("--strong-person-confidence", type=float,
+                        default=STRONG_PERSON_CONFIDENCE,
+                        help="Confianza YOLO para usar validación rápida (0.5-0.95)")
     args = parser.parse_args()
     if not 10.0 <= args.idle_seconds <= 15.0:
         print("Error: --idle-seconds debe estar entre 10 y 15.")
         return 2
     if not 0.5 <= args.presence_seconds <= 5.0:
         print("Error: --presence-seconds debe estar entre 0.5 y 5.")
+        return 2
+    if not 0.3 <= args.fast_presence_seconds <= 1.5:
+        print("Error: --fast-presence-seconds debe estar entre 0.3 y 1.5.")
+        return 2
+    if args.fast_presence_seconds > args.presence_seconds:
+        print("Error: la validación rápida no puede superar la validación normal.")
+        return 2
+    if not 0.50 <= args.strong_person_confidence <= 0.95:
+        print("Error: --strong-person-confidence debe estar entre 0.50 y 0.95.")
         return 2
     if not 0.30 <= args.face_threshold <= 0.90:
         print("Error: --face-threshold debe estar entre 0.30 y 0.90.")
@@ -561,6 +593,8 @@ def main() -> int:
             presence_seconds=args.presence_seconds,
             faces_dir=args.faces_dir,
             face_threshold=args.face_threshold,
+            fast_presence_seconds=args.fast_presence_seconds,
+            strong_person_confidence=args.strong_person_confidence,
         )
         root.mainloop()
     finally:

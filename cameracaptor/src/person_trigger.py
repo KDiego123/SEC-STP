@@ -78,8 +78,15 @@ class PersonArrivalTrigger:
         return (not self._present and self._absence_since is not None
                 and moment - self._absence_since >= self.idle_seconds)
 
-    def observe(self, present: bool, now: float | None = None) -> bool:
+    def observe(self, present: bool, now: float | None = None,
+                confirmation_seconds: float | None = None) -> bool:
         moment = time.monotonic() if now is None else now
+        required_presence = (
+            self.confirmation_seconds
+            if confirmation_seconds is None else confirmation_seconds
+        )
+        if required_presence <= 0:
+            raise ValueError("confirmation_seconds debe ser positivo")
         if not present:
             if self._present or self._absence_since is None:
                 self._absence_since = moment
@@ -95,7 +102,7 @@ class PersonArrivalTrigger:
             self._alerted = False
         self._present = True
         if (self._eligible and not self._alerted and self._presence_since is not None
-                and moment - self._presence_since >= self.confirmation_seconds):
+                and moment - self._presence_since >= required_presence):
             self._alerted = True
             return True
         return False

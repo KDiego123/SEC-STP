@@ -69,6 +69,17 @@ class PersonArrivalTriggerTests(unittest.TestCase):
         self.assertFalse(trigger.observe(True, 28.49))
         self.assertTrue(trigger.observe(True, 28.5))
 
+    def test_strong_detection_can_use_shorter_confirmation(self):
+        trigger = PersonArrivalTrigger(12.0, 1.5, started_at=0.0)
+        self.assertFalse(trigger.observe(True, 13.0, confirmation_seconds=0.6))
+        self.assertFalse(trigger.observe(True, 13.59, confirmation_seconds=0.6))
+        self.assertTrue(trigger.observe(True, 13.61, confirmation_seconds=0.6))
+
+    def test_invalid_dynamic_confirmation_is_rejected(self):
+        trigger = PersonArrivalTrigger(12.0, 1.5, started_at=0.0)
+        with self.assertRaises(ValueError):
+            trigger.observe(True, 13.0, confirmation_seconds=0.0)
+
 
 class PersonAlertSequenceTests(unittest.TestCase):
     def test_inactive_sequence_does_not_announce(self):

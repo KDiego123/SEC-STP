@@ -52,10 +52,13 @@ El umbral de ausencia previo a un nuevo aviso de persona puede ajustarse entre
 ## Funcionamiento
 
 YOLO procesa solamente la clase `person`. El modelo se prepara al arrancar y
-analiza hasta cinco fotogramas por segundo. Después del intervalo configurado
-sin personas, la detección debe mantenerse durante 1,5 segundos continuos. Al
-cumplirse ese tiempo, el aviso se envía inmediatamente y una detección negativa
-reinicia la validación.
+analiza hasta diez fotogramas por segundo. Después del intervalo configurado
+sin personas, una detección clara (confianza de al menos `0.70`) se valida en
+`0.6` segundos; una detección dudosa conserva la validación de `1.5` segundos
+para reducir falsos positivos. Al cumplirse ese tiempo, el aviso se envía
+inmediatamente y una detección negativa reinicia la validación. Estos valores
+pueden ajustarse con `--fast-presence-seconds`, `--presence-seconds` y
+`--strong-person-confidence`.
 Primero dice «Se ha identificado a alguien en la entrada». La llegada permanece
 activa y, si después reconoce un rostro conocido, interrumpe ese aviso general y
 da prioridad inmediata a una frase como «Bienvenido Brayan». Si la identidad ya
@@ -63,11 +66,13 @@ está disponible desde el principio, omite el aviso general. Las frases no se
 repiten continuamente.
 
 El TTS se sintetiza con Windows SAPI y se transmite como audio G.711 μ-law por
-el backchannel RTSP. Después de un periodo sin utilizar el audio, el programa
-reactiva primero la sesión de la cámara para evitar que el primer mensaje se
-pierda. Los avisos de entrada y las bienvenidas conocidas se sintetizan en
-segundo plano al abrir el panel. Si aparece una identidad durante el aviso
-general, la bienvenida sustituye el audio activo sin repetir el precalentamiento.
+el backchannel RTSP. El programa prepara el altavoz al arrancar y envía un pulso
+silencioso cada 30 segundos para impedir que el firmware duerma el canal de
+audio. Si ese mantenimiento falla, conserva el precalentamiento anterior como
+respaldo antes del siguiente aviso. Los avisos de entrada y las bienvenidas
+conocidas se sintetizan en segundo plano al abrir el panel. Si aparece una
+identidad durante el aviso general, la bienvenida sustituye el audio activo sin
+repetir el precalentamiento.
 
 Los focos y el modo de imagen tienen controles separados. El firmware de esta
 cámara no permite garantizar focos blancos encendidos mientras permanece en

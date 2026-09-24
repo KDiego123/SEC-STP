@@ -23,6 +23,9 @@ MAX_AUDIO_SECONDS = 20
 SPEAKER_WAKE_AFTER_SECONDS = 45.0
 SPEAKER_WAKE_AUDIO_SECONDS = 0.8
 SPEAKER_WAKE_DELAY_SECONDS = 0.25
+SPEAKER_KEEPALIVE_SECONDS = 30.0
+SPEAKER_KEEPALIVE_AUDIO_SECONDS = 0.16
+SPEAKER_KEEPALIVE_RETRY_SECONDS = 5.0
 
 
 class SpeakerError(RuntimeError):
@@ -243,7 +246,8 @@ def send_pcmu(
 class CameraSpeaker:
     """Trabajador de voz; nunca bloquea el hilo de interfaz."""
 
-    def __init__(self, host: str, port: int, path: str) -> None:
+    def __init__(self, host: str, port: int, path: str,
+                 keepalive_seconds: float | None = SPEAKER_KEEPALIVE_SECONDS) -> None:
         self.host, self.port, self.path = host, port, path
         self._messages: queue.Queue[
             tuple[str, str | None, threading.Event]
@@ -257,6 +261,8 @@ class CameraSpeaker:
         self._cache_lock = threading.Lock()
         self._preload_messages: queue.Queue[str] = queue.Queue()
         self._last_playback_at: float | None = None
+        self._keepalive_seconds = keepalive_seconds
+        self._next_keepalive_at = 0.0
         self.updates: queue.Queue[str] = queue.Queue()
         self.results: queue.Queue[SpeechResult] = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="camera-speaker", daemon=True)
@@ -368,11 +374,49 @@ class CameraSpeaker:
             pass
         cancel.wait(SPEAKER_WAKE_DELAY_SECONDS)
 
+    def _keep_speaker_warm(self) -> None:
+        """Prepara el altavoz antes de una alerta y evita que vuelva a dormir."""
+        if self._keepalive_seconds is None or self._stop.is_set():
+            return
+        now = time.monotonic()
+        if now < self._next_keepalive_at:
+            return
+        first_warmup = self._last_playback_at is None
+        if (not first_warmup
+                and now - self._last_playback_at < self._keepalive_seconds):
+            self._next_keepalive_at = (
+                self._last_playback_at + self._keepalive_seconds
+            )
+            return
+        seconds = (
+            SPEAKER_WAKE_AUDIO_SECONDS
+            if first_warmup else SPEAKER_KEEPALIVE_AUDIO_SECONDS
+        )
+        silence = b"\xff" * int(8000 * seconds)
+        try:
+            packets = send_pcmu(
+                self.host, self.port, self.path, silence, self._stop
+            )
+            if packets:
+                self._last_playback_at = time.monotonic()
+                self._next_keepalive_at = (
+                    self._last_playback_at + self._keepalive_seconds
+                )
+                if first_warmup:
+                    self.updates.put("Canal de audio preparado para avisos inmediatos.")
+                return
+        except SpeakerError:
+            pass
+        self._next_keepalive_at = (
+            time.monotonic() + SPEAKER_KEEPALIVE_RETRY_SECONDS
+        )
+
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
                 text, tag, cancel = self._messages.get(timeout=0.2)
             except queue.Empty:
+                self._keep_speaker_warm()
                 continue
             succeeded = False
             interrupted = False
@@ -390,6 +434,10 @@ class CameraSpeaker:
                 packets = send_pcmu(self.host, self.port, self.path, audio, cancel)
                 if packets:
                     self._last_playback_at = time.monotonic()
+                    if self._keepalive_seconds is not None:
+                        self._next_keepalive_at = (
+                            self._last_playback_at + self._keepalive_seconds
+                        )
                 if cancel.is_set() or self._stop.is_set():
                     interrupted = True
                     continue

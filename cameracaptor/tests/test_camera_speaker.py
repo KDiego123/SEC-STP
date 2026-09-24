@@ -5,12 +5,33 @@ from unittest.mock import patch
 
 from src.camera_speaker import (
     CameraSpeaker,
+    SPEAKER_KEEPALIVE_AUDIO_SECONDS,
     SPEAKER_WAKE_AUDIO_SECONDS,
     SpeakerError,
 )
 
 
 class CameraSpeakerTests(unittest.TestCase):
+    @patch("src.camera_speaker.send_pcmu")
+    def test_speaker_is_prepared_before_first_alert_and_kept_warm(self, send):
+        send.side_effect = lambda host, port, path, audio, stop: len(audio) // 160
+        speaker = CameraSpeaker("192.0.2.1", 554, "/stream2", keepalive_seconds=0.05)
+        try:
+            deadline = time.monotonic() + 2
+            while len(send.call_args_list) < 2 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertGreaterEqual(len(send.call_args_list), 2)
+            self.assertEqual(
+                send.call_args_list[0].args[3],
+                b"\xff" * int(8000 * SPEAKER_WAKE_AUDIO_SECONDS),
+            )
+            self.assertEqual(
+                send.call_args_list[1].args[3],
+                b"\xff" * int(8000 * SPEAKER_KEEPALIVE_AUDIO_SECONDS),
+            )
+        finally:
+            speaker.close()
+
     @patch("src.camera_speaker.send_pcmu")
     @patch("src.camera_speaker.synthesize_pcmu", return_value=b"\xaa" * 320)
     def test_idle_speaker_is_woken_before_phrase(self, synthesize, send):
