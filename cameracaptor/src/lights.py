@@ -204,7 +204,8 @@ class LightsWorker:
 
     def operate(self, command: str) -> bool:
         if command not in ("lamp_on", "lamp_off", "lamp_auto",
-                           "night_on", "night_off", "night_auto", "read"):
+                           "night_on", "night_off", "night_auto", "read",
+                           "voice_lights_on", "voice_lights_off"):
             raise ValueError("orden de modos no válida")
         if self._closed.is_set() or self._busy.is_set():
             return False
@@ -263,6 +264,18 @@ class LightsWorker:
                     self.controller.set_day_night_mode(1)
                     self._read_state()
                     message = "Visión nocturna desactivada; el firmware apaga los focos en día."
+                elif command == "voice_lights_on":
+                    # El firmware solo ilumina con la lámpara blanca si la imagen
+                    # está forzada a noche; la secuencia debe ser atómica.
+                    self.controller.set_day_night_mode(2)
+                    self.controller.set_lamp_mode(1)
+                    self._read_state()
+                    message = "Comando de voz: visión nocturna y focos blancos activados."
+                elif command == "voice_lights_off":
+                    # Conserva la visión nocturna y cambia a IR para apagar los blancos.
+                    self.controller.set_lamp_mode(0)
+                    self._read_state()
+                    message = "Comando de voz: focos blancos apagados; visión IR activa."
                 else:
                     day = (self._baseline or (2, 0))[1]
                     self.controller.set_day_night_mode(day)

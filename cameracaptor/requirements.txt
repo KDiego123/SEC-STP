@@ -2,3 +2,5 @@ opencv-python==4.14.0.94
 ultralytics==8.4.150
 Pillow==12.3.0
 imageio-ffmpeg==0.6.0
+sounddevice==0.5.6
+vosk==0.3.45

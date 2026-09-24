@@ -14,6 +14,7 @@ import cv2
 from PIL import Image, ImageTk
 
 from src.camera import ReconnectingCamera
+from src.camera_audio import CameraAudioMonitor
 from src.camera_speaker import CameraSpeaker, MAX_TEXT_LENGTH
 from src.config import CameraConfig, configure_opencv_ffmpeg, read_credentials
 from src.detector import DetectionResult, YoloDetectorWorker
@@ -46,6 +47,12 @@ class ControlPanel:
                  strong_person_confidence: float = STRONG_PERSON_CONFIDENCE) -> None:
         self.root, self.config, self.camera = root, config, camera
         self.speaker = CameraSpeaker(config.host, config.port, config.path)
+        self.audio = CameraAudioMonitor(
+            config.make_url(username, password),
+            Path(__file__).with_name("models") / "vosk-model-small-es-0.42",
+            commands_enabled=True,
+        )
+        self.voice_commands_muted_until = 0.0
         known_names = (
             [path.name for path in faces_dir.iterdir() if path.is_dir()]
             if faces_dir is not None else []
@@ -95,6 +102,9 @@ class ControlPanel:
         self.lamp_status = tk.StringVar(value="Consultando lámparas...")
         self.night_status = tk.StringVar(value="Consultando visión...")
         self.connection = tk.StringVar(value="RTSP: conectando")
+        self.audio_listening = tk.BooleanVar(value=False)
+        self.voice_commands_enabled = tk.BooleanVar(value=True)
+        self.audio_status = tk.StringVar(value="Preparando micrófono y comandos...")
         self.speed = tk.DoubleVar(value=0.3)
 
         root.title("CameraCaptor - video, YOLO, voz, focos y PTZ")
@@ -158,6 +168,29 @@ class ControlPanel:
                   text="La voz se sintetiza en este PC y se envía por RTSP. "
                        "El aviso de personas comparte este canal.",
                   wraplength=255, justify="left").pack(anchor="w")
+        ttk.Separator(voice_tab).pack(fill="x", pady=12)
+        microphone_box = ttk.LabelFrame(
+            voice_tab, text="Micrófono y comandos", padding=9
+        )
+        microphone_box.pack(fill="x")
+        self.listen_checkbox = ttk.Checkbutton(
+            microphone_box,
+            text="Escuchar audio de la cámara",
+            variable=self.audio_listening,
+            command=self.toggle_audio_listening,
+        )
+        self.listen_checkbox.pack(anchor="w")
+        self.commands_checkbox = ttk.Checkbutton(
+            microphone_box,
+            text="Órdenes: prende/apaga las luces",
+            variable=self.voice_commands_enabled,
+            command=self.toggle_voice_commands,
+        )
+        self.commands_checkbox.pack(anchor="w", pady=(5, 0))
+        ttk.Label(
+            microphone_box, textvariable=self.audio_status,
+            wraplength=235, justify="left",
+        ).pack(anchor="w", pady=(7, 0))
 
         self.mode_buttons: dict[str, ttk.Button] = {}
         lamp_box = ttk.LabelFrame(camera_tab, text="Focos blancos", padding=10)
@@ -290,8 +323,54 @@ class ControlPanel:
         if not self.speaker.say(phrase):
             self.status.set("La cámara ya está hablando; espera a que termine.")
             return
+        self.suppress_voice_commands()
         self.speak_button.state(["disabled"])
         self.status.set("Preparando audio para la cámara...")
+
+    def suppress_voice_commands(self, seconds: float = 2.0) -> None:
+        self.voice_commands_muted_until = max(
+            self.voice_commands_muted_until, time.monotonic() + seconds
+        )
+
+    def toggle_audio_listening(self) -> None:
+        enabled = self.audio_listening.get()
+        self.audio.set_playback(enabled)
+        self.audio_status.set(
+            "Abriendo escucha del micrófono..." if enabled
+            else "Escucha apagada; los comandos pueden seguir activos."
+        )
+
+    def toggle_voice_commands(self) -> None:
+        enabled = self.voice_commands_enabled.get()
+        self.audio.set_commands(enabled)
+        self.audio_status.set(
+            "Preparando reconocimiento offline..." if enabled
+            else "Comandos de voz desactivados."
+        )
+
+    def execute_voice_command(self, command: str) -> None:
+        labels = {
+            "voice_lights_on": "Prende las luces",
+            "voice_lights_off": "Apaga las luces",
+        }
+        label = labels.get(command)
+        if label is None or not self.voice_commands_enabled.get():
+            return
+        if (self.speaker.busy
+                or time.monotonic() < self.voice_commands_muted_until):
+            self.audio_status.set(
+                f"Orden «{label}» ignorada mientras la cámara hablaba."
+            )
+            return
+        if not self.lights.operate(command):
+            self.audio_status.set(
+                f"Orden «{label}» detectada; control de luces ocupado."
+            )
+            return
+        for button in (*self.mode_buttons.values(), self.modes_retry):
+            button.state(["disabled"])
+        self.audio_status.set(f"Orden reconocida: «{label}».")
+        self.status.set(f"Ejecutando por voz: «{label}».")
 
     def control_modes(self, command: str) -> None:
         if self.lights.operate(command):
@@ -359,6 +438,7 @@ class ControlPanel:
                     priority = welcomes.pop(0)
                     if self.speaker.replace(priority.text, tag=PERSON_ALERT_TAG):
                         self.alert_in_flight = priority
+                        self.suppress_voice_commands()
                         self.status.set(
                             f"Aviso prioritario: «{priority.text}»."
                         )
@@ -385,6 +465,7 @@ class ControlPanel:
         if self.speaker.say(announcement.text, tag=PERSON_ALERT_TAG):
             self.alert_queue.popleft()
             self.alert_in_flight = announcement
+            self.suppress_voice_commands()
             self.speak_button.state(["disabled"])
             self.status.set(f"Enviando aviso: «{announcement.text}».")
 
@@ -444,6 +525,22 @@ class ControlPanel:
     def refresh_status(self) -> None:
         if self.closing:
             return
+        self.audio.set_playback_muted(self.speaker.busy)
+        if self.speaker.busy:
+            self.suppress_voice_commands()
+        try:
+            while True:
+                self.audio_status.set(self.audio.updates.get_nowait())
+        except queue.Empty:
+            pass
+        try:
+            while True:
+                self.execute_voice_command(self.audio.commands.get_nowait())
+        except queue.Empty:
+            pass
+        if self.audio.commands_failed:
+            self.voice_commands_enabled.set(False)
+            self.commands_checkbox.state(["disabled"])
         try:
             while True:
                 speech = self.speaker.results.get_nowait()
@@ -522,6 +619,7 @@ class ControlPanel:
         self.status.set("Cerrando conexiones...")
         self.root.update_idletasks()
         self.stop_move()
+        self.audio.close()
         if self.ptz is not None:
             self.ptz.close()
         self.lights.close()

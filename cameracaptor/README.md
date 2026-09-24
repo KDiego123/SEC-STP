@@ -7,6 +7,7 @@ Incluye:
 - visualización del vídeo RTSP;
 - detección de personas con YOLO11 nano;
 - aviso de voz por el altavoz de la cámara;
+- escucha del micrófono de la cámara y órdenes de voz offline;
 - control independiente de iluminación y visión nocturna;
 - movimiento PTZ mediante botones o teclado.
 
@@ -77,6 +78,24 @@ repetir el precalentamiento.
 Los focos y el modo de imagen tienen controles separados. El firmware de esta
 cámara no permite garantizar focos blancos encendidos mientras permanece en
 modo diurno.
+
+## Micrófono y órdenes de voz
+
+La pestaña **Voz** permite escuchar en el equipo el micrófono integrado de la
+cámara. En una sesión de Escritorio remoto, Windows debe estar configurado para
+reproducir el audio remoto en el equipo desde el que se realiza la conexión.
+
+El reconocimiento funciona localmente, sin enviar grabaciones a Internet. Con
+la opción de órdenes activada acepta estas frases completas:
+
+- «Prende las luces»: fuerza la visión nocturna y enciende los focos blancos.
+- «Apaga las luces»: apaga los focos blancos y conserva la visión nocturna con
+  iluminación infrarroja.
+
+Mientras la cámara reproduce un aviso TTS, la escucha local se silencia y las
+órdenes se ignoran brevemente para evitar que la cámara obedezca su propia voz.
+Se incluye el modelo `vosk-model-small-es-0.42`, publicado por Vosk bajo
+Apache-2.0.
 
 ## Reconocimiento facial experimental
 
