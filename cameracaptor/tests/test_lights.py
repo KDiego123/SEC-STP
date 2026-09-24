@@ -43,7 +43,7 @@ class LightsWorkerTests(unittest.TestCase):
         finally:
             worker.close()
 
-    def test_voice_off_keeps_night_and_selects_ir(self):
+    def test_voice_off_disables_lights_and_night_vision(self):
         camera = FakeCameraWeb()
         camera.lamp = 1
         camera.night = 2
@@ -52,9 +52,10 @@ class LightsWorkerTests(unittest.TestCase):
             self._next_update(worker)
             self.assertTrue(worker.operate("voice_lights_off"))
             message, lamp, night = self._next_update(worker)
-            self.assertEqual(camera.calls, [("lamp", 0)])
-            self.assertEqual((lamp, night), (0, 2))
+            self.assertEqual(camera.calls, [("lamp", 0), ("night", 1)])
+            self.assertEqual((lamp, night), (0, 1))
             self.assertIn("apagados", message)
+            self.assertIn("diurna", message)
         finally:
             worker.close()
 

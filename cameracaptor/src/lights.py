@@ -272,10 +272,12 @@ class LightsWorker:
                     self._read_state()
                     message = "Comando de voz: visión nocturna y focos blancos activados."
                 elif command == "voice_lights_off":
-                    # Conserva la visión nocturna y cambia a IR para apagar los blancos.
+                    # Apaga la iluminación y fuerza el modo diurno para salir
+                    # completamente de la visión nocturna.
                     self.controller.set_lamp_mode(0)
+                    self.controller.set_day_night_mode(1)
                     self._read_state()
-                    message = "Comando de voz: focos blancos apagados; visión IR activa."
+                    message = "Comando de voz: focos apagados y visión diurna activada."
                 else:
                     day = (self._baseline or (2, 0))[1]
                     self.controller.set_day_night_mode(day)

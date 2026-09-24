@@ -89,8 +89,8 @@ El reconocimiento funciona localmente, sin enviar grabaciones a Internet. Con
 la opción de órdenes activada acepta estas frases completas:
 
 - «Prende las luces»: fuerza la visión nocturna y enciende los focos blancos.
-- «Apaga las luces»: apaga los focos blancos y conserva la visión nocturna con
-  iluminación infrarroja.
+- «Apaga las luces»: apaga los focos blancos y fuerza la visión diurna para
+  salir del modo nocturno.
 
 Mientras la cámara reproduce un aviso TTS, la escucha local se silencia y las
 órdenes se ignoran brevemente para evitar que la cámara obedezca su propia voz.
