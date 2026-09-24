@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .env
+api_token.txt
 captures/
 recordings/
 events/

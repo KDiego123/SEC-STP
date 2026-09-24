@@ -13,6 +13,7 @@ from tkinter import ttk
 import cv2
 from PIL import Image, ImageTk
 
+from src.api_server import ApiCommand, ApiServerError, PanelApiBridge, PanelApiServer
 from src.camera import ReconnectingCamera
 from src.camera_audio import CameraAudioMonitor
 from src.camera_speaker import CameraSpeaker, MAX_TEXT_LENGTH
@@ -31,6 +32,7 @@ from src.ptz import OnvifPtz, PtzError, PtzWorker
 
 
 PERSON_ALERT_TAG = "person-arrival"
+API_TTS_TAG_PREFIX = "api-tts:"
 DETECTION_INTERVAL = 0.1
 RESULT_MAX_AGE = 2.0
 ALERT_RETRY_DELAY = 2.0
@@ -44,8 +46,13 @@ class ControlPanel:
                  presence_seconds: float = 1.5, faces_dir: Path | None = None,
                  face_threshold: float = 0.50,
                  fast_presence_seconds: float = FAST_PRESENCE_SECONDS,
-                 strong_person_confidence: float = STRONG_PERSON_CONFIDENCE) -> None:
+                 strong_person_confidence: float = STRONG_PERSON_CONFIDENCE,
+                 api_host: str = "127.0.0.1", api_port: int = 8765,
+                 api_token_file: Path | None = None,
+                 api_enabled: bool = True) -> None:
         self.root, self.config, self.camera = root, config, camera
+        self.api_bridge = PanelApiBridge()
+        self.api: PanelApiServer | None = None
         self.speaker = CameraSpeaker(config.host, config.port, config.path)
         self.audio = CameraAudioMonitor(
             config.make_url(username, password),
@@ -79,6 +86,7 @@ class ControlPanel:
             self.ptz = None
         self.sequence = -1
         self.held_direction: str | None = None
+        self.held_speed = 0.3
         self.move_generation = 0
         self.closing = False
         self.video_photo: ImageTk.PhotoImage | None = None
@@ -98,6 +106,7 @@ class ControlPanel:
         self.alert_retry_at = 0.0
         self.last_person_present = False
         self.last_camera_connected = camera.connected
+        self.last_api_snapshot_at = 0.0
         self.status = tk.StringVar(value="Conectando video...")
         self.lamp_status = tk.StringVar(value="Consultando lámparas...")
         self.night_status = tk.StringVar(value="Consultando visión...")
@@ -105,6 +114,7 @@ class ControlPanel:
         self.audio_listening = tk.BooleanVar(value=False)
         self.voice_commands_enabled = tk.BooleanVar(value=True)
         self.audio_status = tk.StringVar(value="Preparando micrófono y comandos...")
+        self.api_status = tk.StringVar(value="API: preparando...")
         self.speed = tk.DoubleVar(value=0.3)
 
         root.title("CameraCaptor - video, YOLO, voz, focos y PTZ")
@@ -122,6 +132,7 @@ class ControlPanel:
         header.pack(fill="x", pady=(0, 8))
         ttk.Label(header, text="CameraCaptor", style="Title.TLabel").pack(side="left")
         ttk.Label(header, textvariable=self.connection).pack(side="right", padx=(12, 0))
+        ttk.Label(header, textvariable=self.api_status).pack(side="right", padx=(12, 0))
 
         main = ttk.Frame(outer)
         main.pack(fill="both", expand=True)
@@ -277,6 +288,17 @@ class ControlPanel:
             root.bind_all(f"<KeyRelease-{keysym}>",
                           lambda event, d=direction: self.stop_move(d))
         root.bind("<FocusOut>", lambda event: self.stop_move())
+        if api_enabled:
+            token_path = api_token_file or Path(__file__).with_name("api_token.txt")
+            try:
+                self.api = PanelApiServer(
+                    self.api_bridge, api_host, api_port, token_path
+                ).start()
+                self.api_status.set(f"API: {self.api.display_url}")
+            except (ApiServerError, OSError, ValueError) as error:
+                self.api_status.set(f"API: {error}")
+        else:
+            self.api_status.set("API: desactivada")
         root.after(40, self.refresh_video)
         root.after(100, self.refresh_status)
 
@@ -288,20 +310,35 @@ class ControlPanel:
     def start_move(self, direction: str) -> None:
         if self.ptz is None or self.closing or self.held_direction == direction:
             return
+        self.begin_move(direction, self.speed.get())
+
+    def begin_move(self, direction: str, speed: float,
+                   duration_ms: int | None = None) -> None:
+        if self.ptz is None or self.closing:
+            return
         if self.held_direction is not None:
             self.ptz.stop()
         self.held_direction = direction
+        self.held_speed = speed
         self.move_generation += 1
         generation = self.move_generation
-        self.ptz.move(direction, self.speed.get())
+        self.ptz.move(direction, speed)
         self.root.after(220, lambda: self.renew_move(generation))
+        if duration_ms is not None:
+            self.root.after(
+                duration_ms, lambda: self.stop_move_generation(generation)
+            )
 
     def renew_move(self, generation: int) -> None:
         if self.closing or self.ptz is None or generation != self.move_generation:
             return
         if self.held_direction is not None:
-            self.ptz.move(self.held_direction, self.speed.get())
+            self.ptz.move(self.held_direction, self.held_speed)
             self.root.after(220, lambda: self.renew_move(generation))
+
+    def stop_move_generation(self, generation: int) -> None:
+        if generation == self.move_generation:
+            self.stop_move()
 
     def stop_move(self, direction: str | None = None) -> None:
         if direction is not None and direction != self.held_direction:
@@ -378,6 +415,118 @@ class ControlPanel:
                 button.state(["disabled"])
             self.status.set("Actualizando focos o visión de la cámara...")
 
+    def finish_api_command(self, command: ApiCommand, succeeded: bool,
+                           message: str) -> None:
+        self.api_bridge.add_event(
+            "command_dispatched" if succeeded else "command_rejected",
+            {
+                "command_id": command.command_id,
+                "action": command.action,
+                "message": message,
+            },
+        )
+        self.status.set(f"API: {message}")
+
+    def execute_api_command(self, command: ApiCommand) -> None:
+        action, payload = command.action, command.payload
+        if action == "tts":
+            text = str(payload.get("text", "")).strip()
+            accepted = bool(text) and self.speaker.say(
+                text, tag=API_TTS_TAG_PREFIX + command.command_id
+            )
+            if accepted:
+                self.suppress_voice_commands()
+                self.speak_button.state(["disabled"])
+            self.finish_api_command(
+                command, accepted,
+                "TTS enviado a la cámara." if accepted
+                else "el canal TTS está ocupado.",
+            )
+            return
+
+        if action in ("lights_on", "lights_off", "night_mode"):
+            light_command = {
+                "lights_on": "voice_lights_on",
+                "lights_off": "voice_lights_off",
+                "night_mode": {
+                    "auto": "night_auto", "day": "night_off", "night": "night_on",
+                }.get(str(payload.get("mode"))),
+            }[action]
+            accepted = light_command is not None and self.lights.operate(light_command)
+            if accepted:
+                for button in (*self.mode_buttons.values(), self.modes_retry):
+                    button.state(["disabled"])
+            self.finish_api_command(
+                command, accepted,
+                "orden de iluminación enviada." if accepted
+                else "el control de iluminación está ocupado.",
+            )
+            return
+
+        if action == "ptz_move":
+            if self.ptz is None:
+                self.finish_api_command(command, False, "PTZ no disponible.")
+                return
+            self.begin_move(
+                str(payload["direction"]), float(payload["speed"]),
+                int(payload["duration_ms"]),
+            )
+            self.finish_api_command(command, True, "movimiento PTZ iniciado.")
+            return
+
+        if action == "ptz_stop":
+            if self.ptz is None:
+                self.finish_api_command(command, False, "PTZ no disponible.")
+                return
+            self.stop_move()
+            self.finish_api_command(command, True, "movimiento PTZ detenido.")
+            return
+
+        if action == "detection":
+            if self.detector is None:
+                self.finish_api_command(command, False, "YOLO no disponible.")
+                return
+            self.detection_enabled.set(bool(payload.get("enabled")))
+            self.toggle_detection()
+            self.finish_api_command(command, True, "estado de YOLO actualizado.")
+            return
+
+        self.finish_api_command(command, False, "orden desconocida.")
+
+    def process_api_commands(self) -> None:
+        for _ in range(16):
+            try:
+                command = self.api_bridge.commands.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self.execute_api_command(command)
+            except (KeyError, TypeError, ValueError) as error:
+                self.finish_api_command(
+                    command, False, f"parámetros inválidos ({type(error).__name__})."
+                )
+
+    def update_api_status(self) -> None:
+        result = self.last_detection
+        detections = result.detections if result is not None else ()
+        identities = sorted({item.identity for item in detections if item.identity})
+        self.api_bridge.update_status(
+            camera_connected=self.camera.connected,
+            detection_available=self.detector is not None,
+            detection_enabled=(
+                self.detector is not None and self.detection_enabled.get()
+            ),
+            people=len(detections) if self.last_person_present else 0,
+            identities=identities if self.last_person_present else [],
+            inference_ms=(round(result.inference_ms, 1) if result is not None else None),
+            speaker_busy=self.speaker.busy,
+            lights_busy=self.lights.busy,
+            lamp_mode=self.lights.lamp_mode,
+            night_mode=self.lights.night_mode,
+            ptz_available=self.ptz is not None,
+            voice_commands_enabled=self.voice_commands_enabled.get(),
+        )
+
     def toggle_detection(self) -> None:
         self.person_trigger.reset()
         self.alert_sequence.reset()
@@ -414,12 +563,19 @@ class ControlPanel:
             else self.person_trigger.confirmation_seconds
         )
         self.last_person_present = present
-        if self.person_trigger.observe(
-                present, result.completed_at,
-                confirmation_seconds=required_presence):
+        arrival_detected = self.person_trigger.observe(
+            present, result.completed_at,
+            confirmation_seconds=required_presence,
+        )
+        if arrival_detected:
             self.alert_sequence.arm()
             self.alert_retry_count = 0
             self.alert_retry_at = 0.0
+            self.api_bridge.add_event("person_detected", {
+                "people": people,
+                "confidence": round(strongest_confidence, 4),
+                "identities": identities,
+            })
         if not present and self.person_trigger.idle_elapsed(result.completed_at):
             self.alert_sequence.reset()
             self.alert_queue.clear()
@@ -428,6 +584,11 @@ class ControlPanel:
         elif present:
             announcements = self.alert_sequence.announcements(identities)
             welcomes = [item for item in announcements if item.kind == "welcome"]
+            for announcement in welcomes:
+                self.api_bridge.add_event("identity_recognized", {
+                    "text": announcement.text,
+                    "identities": identities,
+                })
             if welcomes:
                 # La identidad conocida desplaza cualquier aviso genérico pendiente.
                 self.alert_queue = deque(
@@ -474,6 +635,9 @@ class ControlPanel:
             return
         connected = self.camera.connected
         if connected != self.last_camera_connected:
+            self.api_bridge.add_event(
+                "camera_connection", {"connected": connected}
+            )
             self.person_trigger.reset()
             self.alert_sequence.reset()
             self.alert_queue.clear()
@@ -514,6 +678,13 @@ class ControlPanel:
                         if detection.face_coordinates is not None:
                             fx1, fy1, fx2, fy2 = detection.face_coordinates
                             cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), (230, 150, 40), 2)
+            if now - self.last_api_snapshot_at >= 0.5:
+                encoded_ok, encoded = cv2.imencode(
+                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 82]
+                )
+                if encoded_ok:
+                    self.api_bridge.set_snapshot(encoded.tobytes())
+                    self.last_api_snapshot_at = now
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             image = Image.fromarray(rgb)
             image.thumbnail((660, 440))
@@ -525,6 +696,13 @@ class ControlPanel:
     def refresh_status(self) -> None:
         if self.closing:
             return
+        self.process_api_commands()
+        if self.api is not None:
+            try:
+                while True:
+                    self.api_status.set(self.api.updates.get_nowait())
+            except queue.Empty:
+                pass
         self.audio.set_playback_muted(self.speaker.busy)
         if self.speaker.busy:
             self.suppress_voice_commands()
@@ -544,6 +722,14 @@ class ControlPanel:
         try:
             while True:
                 speech = self.speaker.results.get_nowait()
+                if (speech.tag is not None
+                        and speech.tag.startswith(API_TTS_TAG_PREFIX)):
+                    self.api_bridge.add_event("tts_completed", {
+                        "command_id": speech.tag.removeprefix(API_TTS_TAG_PREFIX),
+                        "succeeded": speech.succeeded,
+                        "text": speech.text,
+                    })
+                    continue
                 if speech.tag != PERSON_ALERT_TAG:
                     continue
                 announcement = self.alert_in_flight
@@ -592,6 +778,11 @@ class ControlPanel:
                               3: "horario"}.get(night, "desconocida")
                 self.lamp_status.set(f"Lámpara: {lamp_name}.")
                 self.night_status.set(f"Visión: {night_name}.")
+                self.api_bridge.add_event("camera_mode", {
+                    "lamp_mode": lamp,
+                    "night_mode": night,
+                    "message": message,
+                })
         except queue.Empty:
             pass
         if not self.lights.busy:
@@ -608,6 +799,7 @@ class ControlPanel:
             except queue.Empty:
                 pass
         self.try_person_alert()
+        self.update_api_status()
         self.speak_button.state(["disabled"] if self.speaker.busy
                                 else ["!disabled"])
         self.root.after(100, self.refresh_status)
@@ -619,6 +811,8 @@ class ControlPanel:
         self.status.set("Cerrando conexiones...")
         self.root.update_idletasks()
         self.stop_move()
+        if self.api is not None:
+            self.api.close()
         self.audio.close()
         if self.ptz is not None:
             self.ptz.close()
@@ -651,6 +845,14 @@ def main() -> int:
     parser.add_argument("--strong-person-confidence", type=float,
                         default=STRONG_PERSON_CONFIDENCE,
                         help="Confianza YOLO para usar validación rápida (0.5-0.95)")
+    parser.add_argument("--api-host", default="127.0.0.1",
+                        help="Interfaz de escucha de la API; por defecto solo local")
+    parser.add_argument("--api-port", type=int, default=8765,
+                        help="Puerto HTTP de la API")
+    parser.add_argument("--api-token-file", type=Path,
+                        help="Archivo local para el token Bearer de la API")
+    parser.add_argument("--no-api", action="store_true",
+                        help="Inicia el panel sin servidor API")
     args = parser.parse_args()
     if not 10.0 <= args.idle_seconds <= 15.0:
         print("Error: --idle-seconds debe estar entre 10 y 15.")
@@ -669,6 +871,9 @@ def main() -> int:
         return 2
     if not 0.30 <= args.face_threshold <= 0.90:
         print("Error: --face-threshold debe estar entre 0.30 y 0.90.")
+        return 2
+    if not 1 <= args.api_port <= 65535:
+        print("Error: --api-port debe estar entre 1 y 65535.")
         return 2
     if args.faces_dir is not None and not args.faces_dir.is_dir():
         print("Error: --faces-dir no existe o no es una carpeta.")
@@ -693,6 +898,10 @@ def main() -> int:
             face_threshold=args.face_threshold,
             fast_presence_seconds=args.fast_presence_seconds,
             strong_person_confidence=args.strong_person_confidence,
+            api_host=args.api_host,
+            api_port=args.api_port,
+            api_token_file=args.api_token_file,
+            api_enabled=not args.no_api,
         )
         root.mainloop()
     finally:

@@ -8,6 +8,7 @@ Incluye:
 - detección de personas con YOLO11 nano;
 - aviso de voz por el altavoz de la cámara;
 - escucha del micrófono de la cámara y órdenes de voz offline;
+- API HTTP autenticada administrada por el mismo panel;
 - control independiente de iluminación y visión nocturna;
 - movimiento PTZ mediante botones o teclado.
 
@@ -96,6 +97,67 @@ Mientras la cámara reproduce un aviso TTS, la escucha local se silencia y las
 órdenes se ignoran brevemente para evitar que la cámara obedezca su propia voz.
 Se incluye el modelo `vosk-model-small-es-0.42`, publicado por Vosk bajo
 Apache-2.0.
+
+## API local
+
+El panel inicia un único servidor HTTP en `http://127.0.0.1:8765`. No crea otra
+captura RTSP ni otro proceso de YOLO: las solicitudes entran en una cola y el
+panel principal ejecuta todas las acciones. La documentación interactiva está
+en `http://127.0.0.1:8765/docs`.
+
+En el primer inicio se genera `api_token.txt`. El archivo es local, está
+excluido de Git y debe enviarse como token Bearer:
+
+```powershell
+$token = (Get-Content .\api_token.txt -Raw).Trim()
+$headers = @{ Authorization = "Bearer $token" }
+
+Invoke-RestMethod http://127.0.0.1:8765/api/v1/status -Headers $headers
+Invoke-RestMethod http://127.0.0.1:8765/api/v1/lights/on `
+  -Method Post -Headers $headers
+Invoke-RestMethod http://127.0.0.1:8765/api/v1/tts `
+  -Method Post -Headers $headers -ContentType "application/json" `
+  -Body '{"text":"Bienvenido"}'
+```
+
+Endpoints disponibles:
+
+- `GET /api/v1/health`, estado mínimo de disponibilidad;
+- `GET /api/v1/status`, estado completo de cámara y controles;
+- `GET /api/v1/snapshot.jpg`, último fotograma con anotaciones;
+- `GET /api/v1/events`, eventos recientes;
+- `WS /api/v1/events/live`, eventos en vivo; el primer mensaje debe ser
+  `{"token":"...","after":0}`;
+- `POST /api/v1/tts`;
+- `POST /api/v1/lights/on` y `POST /api/v1/lights/off`;
+- `POST /api/v1/night-mode`, con `auto`, `day` o `night`;
+- `POST /api/v1/ptz/move` y `POST /api/v1/ptz/stop`;
+- `POST /api/v1/detection`.
+
+La API escucha solo en el servidor por seguridad. Para una prueba controlada en
+la red puede iniciarse con `--api-host` y una dirección específica. No se debe
+publicar directamente en Internet; el acceso remoto se habilitará mediante una
+VPN y HTTPS.
+
+## Inicio automático en Windows
+
+El panel gráfico debe iniciarse dentro de la sesión del usuario; un servicio
+tradicional de Windows no puede mostrar su ventana. Para crear un acceso de
+inicio automático sin consola, abre PowerShell en la carpeta del proyecto con
+el usuario que mantendrá la sesión y ejecuta:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\activar_inicio_automatico.ps1
+```
+
+Para retirarlo:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\desactivar_inicio_automatico.ps1
+```
+
+El panel y la API comenzarán juntos en el siguiente inicio de sesión. No es
+necesario mantener PowerShell ni Visual Studio Code abiertos.
 
 ## Reconocimiento facial experimental
 
