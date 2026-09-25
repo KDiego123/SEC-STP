@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import os
 import queue
 import time
 import tkinter as tk
 from collections import deque
 from pathlib import Path
 from tkinter import ttk
+
+# Las bibliotecas de inferencia mantienen por defecto sus hilos ocupados tras
+# cada prediccion. La espera pasiva conserva la frecuencia de YOLO sin consumir
+# CPU mientras el detector espera el siguiente fotograma.
+os.environ.setdefault("KMP_BLOCKTIME", "0")
+os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
 
 import cv2
 from PIL import Image, ImageTk
@@ -38,6 +45,11 @@ RESULT_MAX_AGE = 2.0
 ALERT_RETRY_DELAY = 2.0
 FAST_PRESENCE_SECONDS = 0.6
 STRONG_PERSON_CONFIDENCE = 0.70
+
+# En equipos con muchos hilos OpenCV puede gastar mas CPU e incluso tardar mas
+# por la coordinacion interna. Ocho conserva la menor latencia medida en este
+# equipo y deja recursos disponibles para la interfaz y la captura RTSP.
+cv2.setNumThreads(min(8, os.cpu_count() or 1))
 
 
 class ControlPanel:

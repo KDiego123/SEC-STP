@@ -12,6 +12,10 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
+rem Evita que los hilos de inferencia consuman CPU mientras esperan otro frame.
+if not defined KMP_BLOCKTIME set "KMP_BLOCKTIME=0"
+if not defined OMP_WAIT_POLICY set "OMP_WAIT_POLICY=PASSIVE"
+
 ".venv\Scripts\python.exe" ".\control_panel.py" ^
     --credentials-file ".\claves.txt" ^
     --host "%CAMERA_HOST%" ^

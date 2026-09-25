@@ -81,10 +81,12 @@ class FaceMatcher:
     """Construye una plantilla por carpeta y compara rostros por coseno."""
 
     def __init__(self, gallery_dir: Path, model_dir: Path,
-                 threshold: float = 0.50, min_face_size: int = 48) -> None:
+                 threshold: float = 0.50, min_face_size: int = 48,
+                 max_detection_side: int = 640) -> None:
         if not gallery_dir.is_dir():
             raise FaceMatcherError(f"galería inexistente: {gallery_dir}")
-        if not 0.0 < threshold < 1.0 or min_face_size < 20:
+        if (not 0.0 < threshold < 1.0 or min_face_size < 20
+                or max_detection_side < min_face_size):
             raise ValueError("parámetros faciales no válidos")
         detector_path, recognizer_path = ensure_models(model_dir)
         self.detector = cv2.FaceDetectorYN.create(
@@ -92,6 +94,7 @@ class FaceMatcher:
         self.recognizer = cv2.FaceRecognizerSF.create(str(recognizer_path), "")
         self.threshold = threshold
         self.min_face_size = min_face_size
+        self.max_detection_side = max_detection_side
         self.gallery: dict[str, np.ndarray] = {}
         self.reference_count = 0
         self.skipped_count = 0
@@ -109,8 +112,26 @@ class FaceMatcher:
         height, width = image.shape[:2]
         if width < 32 or height < 32:
             return None
-        self.detector.setInputSize((width, height))
-        _, faces = self.detector.detect(image)
+        detection_image = image
+        detection_width, detection_height = width, height
+        if max(width, height) > self.max_detection_side:
+            scale = self.max_detection_side / max(width, height)
+            detection_width = max(32, int(round(width * scale)))
+            detection_height = max(32, int(round(height * scale)))
+            detection_image = cv2.resize(
+                image, (detection_width, detection_height),
+                interpolation=cv2.INTER_AREA,
+            )
+        self.detector.setInputSize((detection_width, detection_height))
+        _, faces = self.detector.detect(detection_image)
+        if faces is not None and (detection_width != width or detection_height != height):
+            # YuNet devuelve caja y cinco puntos faciales. Se restauran todos
+            # a la escala original para alinear SFace y dibujar correctamente.
+            faces = faces.copy()
+            x_columns = (0, 2, 4, 6, 8, 10, 12)
+            y_columns = (1, 3, 5, 7, 9, 11, 13)
+            faces[:, x_columns] = faces[:, x_columns] * (width / detection_width)
+            faces[:, y_columns] = faces[:, y_columns] * (height / detection_height)
         return faces
 
     def _feature(self, image: np.ndarray, face: np.ndarray) -> np.ndarray | None:
