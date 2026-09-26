@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import queue
+import threading
 import time
 import tkinter as tk
 from collections import deque
@@ -45,6 +46,8 @@ RESULT_MAX_AGE = 2.0
 ALERT_RETRY_DELAY = 2.0
 FAST_PRESENCE_SECONDS = 0.6
 STRONG_PERSON_CONFIDENCE = 0.70
+MAIN_STREAM_PATH = "/stream1"
+SUB_STREAM_PATH = "/stream2"
 
 # En equipos con muchos hilos OpenCV puede gastar mas CPU e incluso tardar mas
 # por la coordinacion interna. Ocho conserva la menor latencia medida en este
@@ -63,6 +66,14 @@ class ControlPanel:
                  api_token_file: Path | None = None,
                  api_enabled: bool = True) -> None:
         self.root, self.config, self.camera = root, config, camera
+        mainstream_config = CameraConfig(
+            name=config.name,
+            host=config.host,
+            port=config.port,
+            path=MAIN_STREAM_PATH,
+        )
+        self.mainstream_url = mainstream_config.make_url(username, password)
+        self.mainstream_camera: ReconnectingCamera | None = None
         self.api_bridge = PanelApiBridge()
         self.api: PanelApiServer | None = None
         self.speaker = CameraSpeaker(config.host, config.port, config.path)
@@ -96,12 +107,14 @@ class ControlPanel:
             self.ptz: PtzWorker | None = PtzWorker(OnvifPtz(config.host))
         except PtzError:
             self.ptz = None
-        self.sequence = -1
+        self.detection_sequence = -1
+        self.display_sequence = -1
         self.held_direction: str | None = None
         self.held_speed = 0.3
         self.move_generation = 0
         self.closing = False
         self.video_photo: ImageTk.PhotoImage | None = None
+        self.display_stream = tk.StringVar(value="substream")
         self.detection_enabled = tk.BooleanVar(value=self.detector is not None)
         self.detection_status = tk.StringVar(value="Cargando YOLO nano..." if self.detector
                                              else "YOLO nano no disponible; revisa yolo11n.pt.")
@@ -150,6 +163,22 @@ class ControlPanel:
         main.pack(fill="both", expand=True)
         left = ttk.Frame(main)
         left.pack(side="left", fill="both", expand=True)
+        stream_row = ttk.Frame(left)
+        stream_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(stream_row, text="Calidad de vista:").pack(side="left")
+        for value, label in (("substream", "Substream"),
+                             ("mainstream", "Mainstream HD")):
+            ttk.Radiobutton(
+                stream_row,
+                text=label,
+                value=value,
+                variable=self.display_stream,
+                command=self.switch_display_stream,
+            ).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            stream_row,
+            text="YOLO siempre usa el substream",
+        ).pack(side="right")
         self.video = ttk.Label(left, text="Esperando frames de la cámara...", anchor="center")
         self.video.pack(fill="both", expand=True)
 
@@ -318,6 +347,32 @@ class ControlPanel:
         if event.widget is self.text:
             return
         self.start_move(direction)
+
+    def switch_display_stream(self) -> None:
+        if self.closing:
+            return
+        self.display_sequence = -1
+        if self.display_stream.get() == "mainstream":
+            if self.mainstream_camera is None:
+                self.mainstream_camera = ReconnectingCamera(
+                    self.mainstream_url
+                ).start()
+            self.video.configure(image="", text="Conectando mainstream HD...")
+            self.status.set("Abriendo vista principal; YOLO continúa en substream.")
+        else:
+            camera = self.mainstream_camera
+            self.mainstream_camera = None
+            if camera is not None:
+                threading.Thread(
+                    target=camera.close,
+                    name="mainstream-close",
+                    daemon=True,
+                ).start()
+            self.video.configure(image="", text="Cambiando a substream...")
+            self.status.set("Vista substream activa.")
+        self.api_bridge.add_event(
+            "display_stream_changed", {"stream": self.display_stream.get()}
+        )
 
     def start_move(self, direction: str) -> None:
         if self.ptz is None or self.closing or self.held_direction == direction:
@@ -522,8 +577,17 @@ class ControlPanel:
         result = self.last_detection
         detections = result.detections if result is not None else ()
         identities = sorted({item.identity for item in detections if item.identity})
+        display_camera = (
+            self.mainstream_camera
+            if self.display_stream.get() == "mainstream"
+            else self.camera
+        )
         self.api_bridge.update_status(
             camera_connected=self.camera.connected,
+            display_connected=(
+                display_camera is not None and display_camera.connected
+            ),
+            display_stream=self.display_stream.get(),
             detection_available=self.detector is not None,
             detection_enabled=(
                 self.detector is not None and self.detection_enabled.get()
@@ -662,34 +726,54 @@ class ControlPanel:
                 if latest is not None:
                     self.last_detection_sequence = latest.sequence
             self.last_camera_connected = connected
-        snapshot = self.camera.latest(self.sequence)
-        if snapshot is not None:
-            self.sequence = snapshot.sequence
-            frame = snapshot.frame
-            now = time.monotonic()
+
+        now = time.monotonic()
+        detection_snapshot = self.camera.latest(self.detection_sequence)
+        if detection_snapshot is not None:
+            self.detection_sequence = detection_snapshot.sequence
             if (self.detector is not None and self.detection_enabled.get()
                     and connected and now - self.last_detection_submit >= DETECTION_INTERVAL):
-                self.detector.submit(snapshot.sequence, frame)
+                self.detector.submit(
+                    detection_snapshot.sequence, detection_snapshot.frame
+                )
                 self.last_detection_submit = now
-            if self.detector is not None and self.detection_enabled.get() and connected:
-                result = self.detector.latest()
-                if (result is not None and result.sequence != self.last_detection_sequence
-                        and now - result.completed_at <= RESULT_MAX_AGE):
-                    self.process_detection(result)
-                if (self.last_detection is not None
-                        and now - self.last_detection.completed_at <= RESULT_MAX_AGE):
-                    for detection in self.last_detection.detections:
-                        x1, y1, x2, y2 = detection.coordinates
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (50, 220, 70), 2)
-                        label = (f"{detection.identity} {detection.identity_score:.0%}"
-                                 if detection.identity else
-                                 f"persona {detection.confidence:.0%}")
-                        cv2.putText(frame, label,
-                                    (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.52, (50, 220, 70), 2)
-                        if detection.face_coordinates is not None:
-                            fx1, fy1, fx2, fy2 = detection.face_coordinates
-                            cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), (230, 150, 40), 2)
+
+        if self.detector is not None and self.detection_enabled.get() and connected:
+            result = self.detector.latest()
+            if (result is not None and result.sequence != self.last_detection_sequence
+                    and now - result.completed_at <= RESULT_MAX_AGE):
+                self.process_detection(result)
+
+        display_name = self.display_stream.get()
+        display_snapshot = None
+        if display_name == "mainstream":
+            if self.mainstream_camera is not None:
+                display_snapshot = self.mainstream_camera.latest(self.display_sequence)
+        else:
+            display_snapshot = detection_snapshot
+
+        if display_snapshot is not None:
+            self.display_sequence = display_snapshot.sequence
+            frame = display_snapshot.frame
+            if (display_name == "substream"
+                    and self.detector is not None
+                    and self.detection_enabled.get() and connected
+                    and self.last_detection is not None
+                    and now - self.last_detection.completed_at <= RESULT_MAX_AGE):
+                for detection in self.last_detection.detections:
+                    x1, y1, x2, y2 = detection.coordinates
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (50, 220, 70), 2)
+                    label = (f"{detection.identity} {detection.identity_score:.0%}"
+                             if detection.identity else
+                             f"persona {detection.confidence:.0%}")
+                    cv2.putText(frame, label,
+                                (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.52, (50, 220, 70), 2)
+                    if detection.face_coordinates is not None:
+                        fx1, fy1, fx2, fy2 = detection.face_coordinates
+                        cv2.rectangle(
+                            frame, (fx1, fy1), (fx2, fy2), (230, 150, 40), 2
+                        )
             if now - self.last_api_snapshot_at >= 0.5:
                 encoded_ok, encoded = cv2.imencode(
                     ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 82]
@@ -702,7 +786,20 @@ class ControlPanel:
             image.thumbnail((660, 440))
             self.video_photo = ImageTk.PhotoImage(image)
             self.video.configure(image=self.video_photo, text="")
-        self.connection.set("RTSP: conectado" if connected else "RTSP: reconectando")
+
+        if display_name == "mainstream":
+            display_connected = (
+                self.mainstream_camera is not None
+                and self.mainstream_camera.connected
+            )
+            self.connection.set(
+                f"YOLO sub: {'conectado' if connected else 'reconectando'} · "
+                f"Vista HD: {'conectada' if display_connected else 'conectando'}"
+            )
+        else:
+            self.connection.set(
+                "Substream: conectado" if connected else "Substream: reconectando"
+            )
         self.root.after(40, self.refresh_video)
 
     def refresh_status(self) -> None:
@@ -832,6 +929,8 @@ class ControlPanel:
         if self.detector is not None:
             self.detector.close()
         self.speaker.close()
+        if self.mainstream_camera is not None:
+            self.mainstream_camera.close()
         self.camera.close()
         self.root.destroy()
 
@@ -898,7 +997,7 @@ def main() -> int:
     configure_opencv_ffmpeg()
     host, discovery_source = resolve_camera_host(args.host, args.camera_mac)
     print(f"Cámara: {host} ({discovery_source}).")
-    config = CameraConfig(host=host, path="/stream2")
+    config = CameraConfig(host=host, path=SUB_STREAM_PATH)
     camera = ReconnectingCamera(config.make_url(username, password)).start()
     try:
         root = tk.Tk()

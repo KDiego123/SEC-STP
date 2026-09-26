@@ -4,7 +4,7 @@ Panel local para controlar una cámara IP mediante RTSP, HTTP y ONVIF.
 
 Incluye:
 
-- visualización del vídeo RTSP;
+- visualización del vídeo RTSP con selector mainstream/substream;
 - detección de personas con YOLO11 nano;
 - aviso de voz por el altavoz de la cámara;
 - escucha del micrófono de la cámara y órdenes de voz offline;
@@ -66,6 +66,12 @@ activa y, si después reconoce un rostro conocido, interrumpe ese aviso general 
 da prioridad inmediata a una frase como «Bienvenido Brayan». Si la identidad ya
 está disponible desde el principio, omite el aviso general. Las frases no se
 repiten continuamente.
+
+El selector de calidad cambia solamente la vista del panel. El mainstream usa
+`/stream1` y muestra la imagen principal limpia, sin cajas ni nombres. El
+substream usa `/stream2` y muestra las anotaciones. YOLO y el reconocimiento
+facial permanecen siempre en el substream para conservar el rendimiento aunque
+la vista principal esté mostrando el vídeo de alta resolución.
 
 El TTS se sintetiza con Windows SAPI y se transmite como audio G.711 μ-law por
 el backchannel RTSP. El programa prepara el altavoz al arrancar y envía un pulso

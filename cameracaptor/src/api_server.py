@@ -46,6 +46,8 @@ class PanelApiBridge:
         self._started_at = time.monotonic()
         self._status: dict[str, Any] = {
             "camera_connected": False,
+            "display_connected": False,
+            "display_stream": "substream",
             "detection_available": False,
             "detection_enabled": False,
             "people": 0,
