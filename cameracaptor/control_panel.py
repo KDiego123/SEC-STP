@@ -9,6 +9,7 @@ import threading
 import time
 import tkinter as tk
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from tkinter import ttk
 
@@ -114,6 +115,8 @@ class ControlPanel:
         self.move_generation = 0
         self.closing = False
         self.video_photo: ImageTk.PhotoImage | None = None
+        self.latest_clean_frame = None
+        self.latest_clean_stream = "substream"
         self.display_stream = tk.StringVar(value="substream")
         self.detection_enabled = tk.BooleanVar(value=self.detector is not None)
         self.detection_status = tk.StringVar(value="Cargando YOLO nano..." if self.detector
@@ -175,10 +178,14 @@ class ControlPanel:
                 variable=self.display_stream,
                 command=self.switch_display_stream,
             ).pack(side="left", padx=(8, 0))
-        ttk.Label(
+        ttk.Button(
             stream_row,
-            text="YOLO siempre usa el substream",
+            text="Guardar captura",
+            command=self.save_screenshot,
         ).pack(side="right")
+        ttk.Label(stream_row, text="YOLO: substream").pack(
+            side="right", padx=(8, 8)
+        )
         self.video = ttk.Label(left, text="Esperando frames de la cámara...", anchor="center")
         self.video.pack(fill="both", expand=True)
 
@@ -373,6 +380,41 @@ class ControlPanel:
         self.api_bridge.add_event(
             "display_stream_changed", {"stream": self.display_stream.get()}
         )
+
+    def save_screenshot(self) -> None:
+        frame = self.latest_clean_frame
+        if frame is None:
+            self.status.set("Aún no hay un fotograma disponible para capturar.")
+            return
+        captured_at = datetime.now()
+        relative_dir = Path("captures") / captured_at.strftime("%Y-%m-%d")
+        directory = Path(__file__).parent / relative_dir
+        height, width = frame.shape[:2]
+        filename = (
+            f"capture_{captured_at:%Y%m%d_%H%M%S_%f}_"
+            f"{self.latest_clean_stream}_{width}x{height}.jpg"
+        )
+        path = directory / filename
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            saved = cv2.imwrite(
+                str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95]
+            )
+        except (OSError, cv2.error):
+            saved = False
+        if not saved:
+            self.status.set("No se pudo guardar la captura.")
+            return
+        relative_path = relative_dir / filename
+        self.status.set(
+            f"Captura guardada: {relative_path} ({width}x{height})."
+        )
+        self.api_bridge.add_event("screenshot_saved", {
+            "path": relative_path.as_posix(),
+            "stream": self.latest_clean_stream,
+            "width": width,
+            "height": height,
+        })
 
     def start_move(self, direction: str) -> None:
         if self.ptz is None or self.closing or self.held_direction == direction:
@@ -754,12 +796,15 @@ class ControlPanel:
 
         if display_snapshot is not None:
             self.display_sequence = display_snapshot.sequence
-            frame = display_snapshot.frame
+            self.latest_clean_frame = display_snapshot.frame
+            self.latest_clean_stream = display_name
+            frame = self.latest_clean_frame
             if (display_name == "substream"
                     and self.detector is not None
                     and self.detection_enabled.get() and connected
                     and self.last_detection is not None
                     and now - self.last_detection.completed_at <= RESULT_MAX_AGE):
+                frame = frame.copy()
                 for detection in self.last_detection.detections:
                     x1, y1, x2, y2 = detection.coordinates
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (50, 220, 70), 2)

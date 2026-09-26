@@ -73,6 +73,12 @@ substream usa `/stream2` y muestra las anotaciones. YOLO y el reconocimiento
 facial permanecen siempre en el substream para conservar el rendimiento aunque
 la vista principal esté mostrando el vídeo de alta resolución.
 
+El botón **Guardar captura** almacena el último fotograma limpio de la vista
+seleccionada en `captures/AAAA-MM-DD`. Para crear referencias faciales conviene
+seleccionar el mainstream, capturar varias posiciones y luego recortar una sola
+cara por imagen antes de copiar las fotos revisadas a la carpeta de la identidad
+en `face_gallery`.
+
 El TTS se sintetiza con Windows SAPI y se transmite como audio G.711 μ-law por
 el backchannel RTSP. El programa prepara el altavoz al arrancar y envía un pulso
 silencioso cada 30 segundos para impedir que el firmware duerma el canal de
